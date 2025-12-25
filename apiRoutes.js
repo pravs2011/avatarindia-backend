@@ -7,6 +7,7 @@ const authRoute = require("./routes/auth");
 const roleRoute = require("./routes/role");
 const errorLogRoute = require("./routes/errorreport");
 const auditLogRoute = require("./routes/logbrowser");
+const boardMemberRoute = require("./routes/boardmember");
 
 module.exports = (app) => {
   //Route Middlewares
@@ -15,4 +16,5 @@ module.exports = (app) => {
   app.use("/api/roles", roleRoute);
   app.use("/api/elog/", errorLogRoute);
   app.use("/api/alog", auditLogRoute);
+  app.use("/api/boardmember", boardMemberRoute);
 };

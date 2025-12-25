@@ -57,11 +57,6 @@ const boardMemberSchema = new mongoose.Schema(
       required: false,
       max: 255,
     },
-    profile_linkedin: {
-      type: String,
-      required: false,
-      max: 255,
-    },
   },
   {
     timestamps: true,
