@@ -1,5 +1,5 @@
 const router = require("express").Router();
-const BoardMember = require("../models/BoardMember");
+const Executive = require("../models/Executive");
 const verify = require("./verifyToken");
 const { createLog } = require("./logreport");
 const multer = require("multer");
@@ -46,45 +46,49 @@ const upload = multer({
   fileFilter: fileFilter,
 });
 
-// (R) Read / Get All Board Members
+// (R) Read / Get All Executives
 router.get("/", async (req, res) => {
   try {
-    const boardMembers = await BoardMember.find().sort({
-      createdAt: -1,
-    });
+    const executives = await Executive.find()
+      .sort({
+        createdAt: 1,
+      })
+      .populate("executive_type_id");
+
     res.json({
-      boardMembers: boardMembers,
+      executives: executives,
     });
   } catch (err) {
     res.status(400).json({ error: err });
   }
 });
 
-// (R) Read / Get Single Board Member by ID
+// (R) Read / Get Single Executive by ID
 router.get("/:id", verify, async (req, res) => {
   try {
-    const boardMembers = await BoardMember.findById(req.params.id);
-    if (!boardMembers) {
-      return res.status(404).json({ error: "Board members not found" });
+    const executives = await Executive.findById(req.params.id);
+    if (!executives) {
+      return res.status(404).json({ error: "Executives not found" });
     }
     res.json({
-      boardMembers: boardMembers,
+      executives: executives,
     });
   } catch (err) {
     res.status(400).json({ error: err });
   }
 });
 
-// (C) Create / Add a Board Member
+// (C) Create / Add an Executive
 router.post(
   "/add",
   verify,
   upload.single("profile_picture"),
   async (req, res) => {
     try {
-      // Prepare board member data
-      const boardMemberData = {
+      // Prepare executive data
+      const executiveData = {
         profile_name: req.body.profile_name,
+        executive_type_id: req.body.executive_type_id,
         profile_designation: req.body.profile_designation,
         profile_description: req.body.profile_description,
         profile_email: req.body.profile_email,
@@ -99,13 +103,13 @@ router.post(
       // Add profile picture URL if file was uploaded
       if (req.file) {
         // Save path without "public" prefix
-        boardMemberData.profile_picture_url = `profile/${req.file.filename}`;
+        executiveData.profile_picture_url = `profile/${req.file.filename}`;
       }
 
-      const boardMember = new BoardMember(boardMemberData);
+      const executive = new Executive(executiveData);
 
       const log_id = await createLog({
-        data: JSON.stringify({ ...boardMemberData }),
+        data: JSON.stringify({ ...executiveData }),
         user: req.user._id,
         activity: "Create",
         page: "BoardMember",
@@ -113,8 +117,8 @@ router.post(
         route: "/add",
       });
 
-      const savedBoardMember = await boardMember.save();
-      res.json({ boardMember: savedBoardMember._id });
+      const savedExecutive = await executive.save();
+      res.json({ executive: savedExecutive._id });
     } catch (err) {
       // Delete uploaded file if there's an error
       if (req.file) {
@@ -132,60 +136,62 @@ router.post(
   }
 );
 
-// (U) Update Board Member
+// (U) Update Executive
 router.post(
   "/update/:id",
   verify,
   upload.single("profile_picture"),
   async (req, res) => {
     try {
-      const boardMember = await BoardMember.findById(req.params.id);
+      const executive = await Executive.findById(req.params.id);
 
-      if (!boardMember) {
-        return res.status(404).json({ message: "Board member not found" });
+      if (!executive) {
+        return res.status(404).json({ message: "Executive not found" });
       }
 
       // Update fields
       if (req.body.profile_name !== undefined)
-        boardMember.profile_name = req.body.profile_name;
+        executive.profile_name = req.body.profile_name;
+      if (req.body.executive_type_id !== undefined)
+        executive.executive_type_id = req.body.executive_type_id;
       if (req.body.profile_designation !== undefined)
-        boardMember.profile_designation = req.body.profile_designation;
+        executive.profile_designation = req.body.profile_designation;
       if (req.body.profile_description !== undefined)
-        boardMember.profile_description = req.body.profile_description;
+        executive.profile_description = req.body.profile_description;
       if (req.body.profile_email !== undefined)
-        boardMember.profile_email = req.body.profile_email;
+        executive.profile_email = req.body.profile_email;
       if (req.body.profile_phone !== undefined)
-        boardMember.profile_phone = req.body.profile_phone;
+        executive.profile_phone = req.body.profile_phone;
       if (req.body.profile_linkedin !== undefined)
-        boardMember.profile_linkedin = req.body.profile_linkedin;
+        executive.profile_linkedin = req.body.profile_linkedin;
       if (req.body.profile_twitter !== undefined)
-        boardMember.profile_twitter = req.body.profile_twitter;
+        executive.profile_twitter = req.body.profile_twitter;
       if (req.body.profile_facebook !== undefined)
-        boardMember.profile_facebook = req.body.profile_facebook;
+        executive.profile_facebook = req.body.profile_facebook;
       if (req.body.profile_instagram !== undefined)
-        boardMember.profile_instagram = req.body.profile_instagram;
+        executive.profile_instagram = req.body.profile_instagram;
       if (req.body.profile_youtube !== undefined)
-        boardMember.profile_youtube = req.body.profile_youtube;
+        executive.profile_youtube = req.body.profile_youtube;
 
       // Handle new profile picture upload
       if (req.file) {
         // Delete old profile picture if it exists
-        if (boardMember.profile_picture_url) {
+        if (executive.profile_picture_url) {
           const oldFilePath = path.join(
             __dirname,
             "../public",
-            boardMember.profile_picture_url
+            executive.profile_picture_url
           );
           if (fs.existsSync(oldFilePath)) {
             fs.unlinkSync(oldFilePath);
           }
         }
         // Save new profile picture path without "public" prefix
-        boardMember.profile_picture_url = `profile/${req.file.filename}`;
+        executive.profile_picture_url = `profile/${req.file.filename}`;
       }
 
       const log_id = await createLog({
-        data: JSON.stringify({ ...boardMember.toObject(), ...req.body }),
+        data: JSON.stringify({ ...executive.toObject(), ...req.body }),
         user: req.user._id,
         activity: "Update",
         page: "BoardMember",
@@ -193,8 +199,8 @@ router.post(
         route: "/update",
       });
 
-      const updatedBoardMember = await boardMember.save();
-      res.json({ boardMember: updatedBoardMember });
+      const updatedExecutive = await executive.save();
+      res.json({ executive: updatedExecutive });
     } catch (err) {
       // Delete uploaded file if there's an error
       if (req.file) {
@@ -212,21 +218,21 @@ router.post(
   }
 );
 
-// (D) Delete Board Member
+// (D) Delete Executive
 router.delete("/delete/:id", verify, async (req, res) => {
   try {
-    const boardMember = await BoardMember.findById(req.params.id);
+    const executive = await Executive.findById(req.params.id);
 
-    if (!boardMember) {
-      return res.status(404).json({ message: "Board member not found" });
+    if (!executive) {
+      return res.status(404).json({ message: "Executive not found" });
     }
 
     // Delete profile picture file if it exists
-    if (boardMember.profile_picture_url) {
+    if (executive.profile_picture_url) {
       const filePath = path.join(
         __dirname,
         "../public",
-        boardMember.profile_picture_url
+        executive.profile_picture_url
       );
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
@@ -234,20 +240,18 @@ router.delete("/delete/:id", verify, async (req, res) => {
     }
 
     const log_id = await createLog({
-      data: JSON.stringify(boardMember.toObject()),
+      data: JSON.stringify(executive.toObject()),
       user: req.user._id,
       activity: "Delete",
-      page: "BoardMember",
+      page: "Executive",
       ip_information: req.ip,
       route: "/delete",
     });
 
-    await boardMember.deleteOne();
-    res.json({ message: "Board member deleted successfully" });
+    await executive.deleteOne();
+    res.json({ message: "Executive deleted successfully" });
   } catch (err) {
-    res
-      .status(500)
-      .json({ message: "Error deleting board member", error: err });
+    res.status(500).json({ message: "Error deleting executive", error: err });
   }
 });
 
