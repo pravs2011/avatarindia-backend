@@ -172,6 +172,44 @@ router.post("/tokenverify", verify, async (req, res) => {
   }
 });
 
+//Renew the access token ("I'm still here")
+router.post("/refresh", verify, async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user || !user.account_status) {
+      return res.status(400).json({
+        message: "Account unavailable",
+        token: false,
+      });
+    }
+
+    const token = jwt.sign(
+      {
+        _id: user._id,
+        name: user.first_name + " " + (user.last_name ? user.last_name : ""),
+        role: user.role,
+      },
+      process.env.JWT_TOKEN_SECRET,
+      {
+        expiresIn: process.env.JWT_ACCESS_TIME,
+      }
+    );
+
+    res.setHeader("auth-token", token);
+    res.status(200).json({
+      token: true,
+      user: {
+        _id: user._id,
+        name: user.first_name + " " + (user.last_name ? user.last_name : ""),
+        role: user.role,
+        reviewer_status: user.reviewer_status,
+      },
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message, token: false });
+  }
+});
+
 router.post("/register", verify, async (req, res) => {
   console.log(req.body);
   //Validate User before Registering

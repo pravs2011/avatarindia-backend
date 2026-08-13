@@ -100,7 +100,7 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' https://avatarindia.softedgeappstore.in http://localhost:5173 data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-src 'self'"
+    "default-src 'self'; img-src 'self' https://avatarindia.softedgeappstore.in http://localhost:5173 https://i.ytimg.com https://img.youtube.com data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' https://www.youtube.com"
   );
   next();
 });

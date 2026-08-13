@@ -88,7 +88,9 @@ app.use(express.urlencoded({ limit: "200mb", extended: true }));
 // app.use(fileupload());
 
 // //Enable Public Folder
-// app.use(express.static("./public"));
+// Serve the public folder at root (matches server.js) so uploaded
+// files (profile images, gallery images/videos) resolve in local dev
+app.use(express.static("./public"));
 
 // Now, setup express to serve the static files and use the catch-all route
 app.use("/web", express.static(path.join(__dirname, "./public")));
@@ -102,7 +104,7 @@ app.use((req, res, next) => {
 app.use(function (req, res, next) {
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'http://localhost:3006' 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self'; frame-src 'self'"
+    "default-src 'http://localhost:3006' 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' https://i.ytimg.com https://img.youtube.com; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' https://www.youtube.com"
   );
   next();
 });
