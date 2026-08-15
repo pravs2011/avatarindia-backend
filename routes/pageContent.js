@@ -4,7 +4,7 @@ const PageContent = require("../models/PageContent");
 const verify = require("./verifyToken");
 const { createLog } = require("./logreport");
 
-const ALLOWED_PAGES = ["home", "about"];
+const ALLOWED_PAGES = ["home", "about", "contact", "consent"];
 
 const isValidPage = (p) => typeof p === "string" && ALLOWED_PAGES.includes(p);
 
@@ -46,7 +46,7 @@ router.put("/:page", verify, async (req, res) => {
     const doc = await PageContent.findOneAndUpdate(
       { page_key: req.params.page },
       { content, updated_by: req.user._id },
-      { new: true, upsert: true, setDefaultsOnInsert: true }
+      { new: true, upsert: true, setDefaultsOnInsert: true },
     );
 
     createLog({

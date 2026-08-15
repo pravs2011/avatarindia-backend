@@ -46,10 +46,20 @@ const upload = multer({
   fileFilter: fileFilter,
 });
 
-// (R) Read / Get All Executives
+// (R) Read / Get All Executives.
+// Admin uses the default (all executives, including hidden ones). Public
+// pages pass ?visibility=visible to get only the enabled executives.
+// Records created before the visibility flag existed have no is_visible
+// field - those are treated as visible so they keep showing up publicly.
 router.get("/", async (req, res) => {
   try {
-    const executives = await Executive.find()
+    const filter =
+      req.query.visibility === "visible"
+        ? {
+            $or: [{ is_visible: true }, { is_visible: { $exists: false } }],
+          }
+        : {};
+    const executives = await Executive.find(filter)
       .sort({
         createdAt: 1,
       })
@@ -98,6 +108,10 @@ router.post(
         profile_facebook: req.body.profile_facebook,
         profile_instagram: req.body.profile_instagram,
         profile_youtube: req.body.profile_youtube,
+        is_visible:
+          req.body.is_visible !== undefined
+            ? String(req.body.is_visible) === "true"
+            : true,
       };
 
       // Add profile picture URL if file was uploaded
@@ -172,6 +186,9 @@ router.post(
         executive.profile_instagram = req.body.profile_instagram;
       if (req.body.profile_youtube !== undefined)
         executive.profile_youtube = req.body.profile_youtube;
+      if (req.body.is_visible !== undefined) {
+        executive.is_visible = String(req.body.is_visible) === "true";
+      }
 
       // Handle new profile picture upload
       if (req.file) {

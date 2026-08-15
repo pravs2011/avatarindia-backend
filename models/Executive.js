@@ -7,6 +7,10 @@ const executiveSchema = new mongoose.Schema(
       required: false,
       max: 255,
     },
+    is_visible: {
+      type: Boolean,
+      default: true,
+    },
     profile_name: {
       type: String,
       required: false,
