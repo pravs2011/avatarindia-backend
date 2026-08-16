@@ -1,7 +1,5 @@
 const express = require("express");
 const router = express.Router();
-const path = require("path");
-const fs = require("fs");
 const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
@@ -20,10 +18,10 @@ const { createNotification } = require("./notifications");
 const { renderTemplate } = require("./emailTemplates");
 const { saveCaptchaCode } = require("./captchacodes");
 
-const EXCEL_PATH = path.resolve(
-  __dirname,
-  "../../send_email_to_registrants/registrations.xlsx",
-);
+// The member list lives in the database (Registration collection) - it is
+// the single source of truth for the Registered Members page, the stats
+// dashboard and the Excel export. No master Excel file is maintained on the
+// server, so there is no file path to configure or keep writable.
 
 // Anti-abuse: limit how fast registrations and captcha requests can come
 // from a single IP so the public registration form cannot be bombarded.
@@ -270,128 +268,54 @@ const upload = multer({
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
 });
 
-// Helper function to append registration to Excel file
-async function appendToExcel(data) {
-  const workbook = new ExcelJS.Workbook();
+// Next sequential S.No for newly created members (the legacy Excel list
+// convention started at 168 when the list was empty).
+const getNextSNo = async () => {
+  const max = await Registration.findOne({})
+    .sort({ sNo: -1 })
+    .select("sNo")
+    .lean();
+  const base = max && Number.isFinite(max.sNo) ? max.sNo : 0;
+  return base > 0 ? base + 1 : 168;
+};
 
-  if (fs.existsSync(EXCEL_PATH)) {
-    await workbook.xlsx.readFile(EXCEL_PATH);
-  } else {
-    const ws = workbook.addWorksheet("MembershipLists");
-    ws.addRow([
-      "S.No",
-      "Registration No",
-      "Full Name",
-      "Email Id",
-      "Mobile No",
-      "Expiry Date",
-      "Date",
-      "Time",
-    ]);
-  }
+const makeRegNo = (sNo) => `AIS${String(sNo).padStart(4, "0")}`;
 
-  let worksheet = workbook.getWorksheet("MembershipLists");
-  if (!worksheet) {
-    worksheet = workbook.getWorksheet(1);
-  }
-
-  let maxSNo = 0;
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const val = row.getCell(1).value;
-    const num = parseInt(val, 10);
-    if (!isNaN(num) && num > maxSNo) {
-      maxSNo = num;
-    }
-  });
-
-  const nextSNo = maxSNo > 0 ? maxSNo + 1 : 168;
-  const regNo = `AIS${String(nextSNo).padStart(4, "0")}`;
-
-  const now = new Date();
-  const dateStr = now.toISOString().split("T")[0];
-  const timeStr = now.toTimeString().split(" ")[0];
-
-  const titlePrefix =
-    data.title && data.title !== "Select Title" ? `${data.title} ` : "";
-  const fullName = `${titlePrefix}${data.firstName} ${data.lastName}`.trim();
-
-  worksheet.addRow([
-    nextSNo,
-    regNo,
-    fullName,
-    data.email,
-    data.mobileNo,
-    "LifeTime",
-    dateStr,
-    timeStr,
-  ]);
-
-  await workbook.xlsx.writeFile(EXCEL_PATH);
-  return { sNo: nextSNo, regNo, fullName, dateStr, timeStr };
-}
-
-// Case-insensitive duplicate check for a registered email across the DB and
-// the Excel list (members may exist in Excel without a DB record).
+// Case-insensitive duplicate check for a registered email across the DB.
 const checkDuplicateEmail = async (email) => {
   const normalized = String(email || "").trim().toLowerCase();
   if (!normalized) return false;
 
   const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const dbMatch = await Registration.findOne({
-    email: new RegExp(`^${escaped}$`, "i"),
-  });
-  if (dbMatch) return true;
-
-  if (!fs.existsSync(EXCEL_PATH)) return false;
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(EXCEL_PATH);
-  const worksheet =
-    workbook.getWorksheet("MembershipLists") || workbook.getWorksheet(1);
-  if (!worksheet) return false;
-
-  let found = false;
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const cell = row.getCell(4).value;
-    const val =
-      cell === null || cell === undefined ? "" : String(cell).trim().toLowerCase();
-    if (val && val === normalized) found = true;
-  });
-  return found;
+  return Boolean(
+    await Registration.findOne({
+      email: new RegExp(`^${escaped}$`, "i"),
+    }),
+  );
 };
 
-// Remove the rows matching the given registration numbers from the Excel
-// list (used by admin delete and member self-erasure).
-const deleteRowsFromExcel = async (registrationNos) => {
-  if (!fs.existsSync(EXCEL_PATH)) return;
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(EXCEL_PATH);
-  const worksheet =
-    workbook.getWorksheet("MembershipLists") || workbook.getWorksheet(1);
-  if (!worksheet) return;
-
-  const noSet = new Set(registrationNos);
-  const rowsToRemove = [];
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const regNo = String(
-      row.getCell(2).value === null || row.getCell(2).value === undefined
-        ? ""
-        : row.getCell(2).value,
-    ).trim();
-    if (noSet.has(regNo)) {
-      rowsToRemove.push(rowNumber);
-    }
-  });
-
-  // Remove rows from bottom to top so earlier row numbers stay valid
-  rowsToRemove.reverse().forEach((rowNumber) => {
-    worksheet.spliceRows(rowNumber, 1);
-  });
-
-  await workbook.xlsx.writeFile(EXCEL_PATH);
+// Format a Date as DD/MM/YYYY (or pass a date string through unchanged).
+const fmtDate = (v) => {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return `${String(v.getDate()).padStart(2, "0")}/${String(v.getMonth() + 1).padStart(2, "0")}/${v.getFullYear()}`;
+  }
+  return String(v ?? "").trim();
 };
+
+// Format a Date as HH:MM:SS (or pass a time string through unchanged).
+const fmtTime = (v) => {
+  if (v instanceof Date && !isNaN(v.getTime())) {
+    return v.toTimeString().slice(0, 8);
+  }
+  return String(v ?? "").trim();
+};
+
+// Display date / time for a member, falling back to their registration time
+// for records that predate the stored date/time fields.
+const memberDate = (doc) =>
+  fmtDate(doc.date || doc.registeredAt || doc.createdAt);
+const memberTime = (doc) =>
+  fmtTime(doc.time || doc.registeredAt || doc.createdAt);
 
 const TITLE_PREFIXES = ["Dr.", "Prof.", "Mr.", "Mrs.", "Ms."];
 
@@ -1132,8 +1056,6 @@ router.delete("/delete", verify, async (req, res) => {
       await member.deleteOne();
     }
 
-    await deleteRowsFromExcel(registrationNos);
-
     return res.json({
       success: true,
       deleted: members.length,
@@ -1173,9 +1095,6 @@ router.delete("/account", verifyMembershipToken, async (req, res) => {
       memberName: member.fullName,
       memberEmail: member.email,
     });
-
-    // Erase the member's personal data from the registration list
-    await deleteRowsFromExcel([member.registrationNo]);
 
     // Erase grievances (they contain the member's personal data)
     await Grievance.deleteMany({ memberId: member._id });
@@ -1249,17 +1168,14 @@ router.post("/register", registerRateLimiter, async (req, res) => {
       });
     }
 
-    const { sNo, regNo, fullName, dateStr, timeStr } = await appendToExcel({
-      mobileNo,
-      email,
-      title,
-      firstName,
-      lastName,
-      country,
-      speciality,
-      membershipPlan,
-      amount,
-    });
+    const titlePrefix =
+      title && title !== "Select Title" ? `${title} ` : "";
+    const fullName = `${titlePrefix}${firstName} ${lastName}`.trim();
+    const sNo = await getNextSNo();
+    const regNo = makeRegNo(sNo);
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0];
+    const timeStr = now.toTimeString().split(" ")[0];
 
     try {
       const newRegistration = new Registration({
@@ -1278,6 +1194,9 @@ router.post("/register", registerRateLimiter, async (req, res) => {
         membershipPlan: membershipPlan || "Lifetime",
         amount: amount || 5000,
         expiryDate: "LifeTime",
+        date: dateStr,
+        time: timeStr,
+        registeredAt: now,
         consent: true,
         consentGivenAt: new Date(),
         consentRevokedAt: null,
@@ -1326,72 +1245,23 @@ router.post("/register", registerRateLimiter, async (req, res) => {
   }
 });
 
-// GET: List all registrations
+// GET: List all registrations (from the database - the single source of
+// truth since the legacy Excel master list was removed).
 router.get("/list", async (req, res) => {
   try {
-    const dbRegistrations = await Registration.find({})
-      .sort({ sNo: -1 })
-      .lean();
-    const dbMap = new Map(
-      dbRegistrations.map((item) => [String(item.registrationNo), item]),
-    );
-
-    const workbook = new ExcelJS.Workbook();
-    if (!fs.existsSync(EXCEL_PATH)) {
-      return res.json({ success: true, count: 0, registrations: [] });
-    }
-    await workbook.xlsx.readFile(EXCEL_PATH);
-    const worksheet =
-      workbook.getWorksheet("MembershipLists") || workbook.getWorksheet(1);
-
-    const normalizeCell = (v) => {
-      if (v === null || v === undefined) return "";
-      if (typeof v === "object") {
-        if (v instanceof Date) return v;
-        if (v.richText) return v.richText.map((t) => t.text).join("");
-        if (v.text) return v.text;
-        if (v.formula) return v.result ?? "";
-      }
-      return v;
-    };
-
-    const formatDate = (v) => {
-      if (v instanceof Date) {
-        const d = String(v.getDate()).padStart(2, "0");
-        const m = String(v.getMonth() + 1).padStart(2, "0");
-        return `${d}/${m}/${v.getFullYear()}`;
-      }
-      return String(v ?? "").trim();
-    };
-
-    const formatTime = (v) => {
-      if (v instanceof Date) return v.toTimeString().slice(0, 8);
-      if (typeof v === "object" && v !== null && "hours" in v) {
-        const p = (n) => String(n ?? 0).padStart(2, "0");
-        return `${p(v.hours)}:${p(v.minutes)}:${p(v.seconds)}`;
-      }
-      return String(v ?? "").trim();
-    };
-
     const durationDays = await getConsentDurationDays();
-    const registrations = [];
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return;
-      const c = (i) => normalizeCell(row.getCell(i).value);
-      const registrationNo = String(c(2) ?? "").trim();
-      const fullName = String(c(3) ?? "").trim();
-      if (!registrationNo && !fullName) return;
+    const docs = await Registration.find({}).sort({ sNo: -1 }).lean();
+    const now = Date.now();
 
-      const dbRecord = dbMap.get(registrationNo) || null;
-      const hasConsent = Boolean(dbRecord?.consent);
-      const now = Date.now();
-      const effectiveExpiry = effectiveConsentExpiry(dbRecord, durationDays);
+    const registrations = docs.map((doc) => {
+      const hasConsent = Boolean(doc.consent);
+      const effectiveExpiry = effectiveConsentExpiry(doc, durationDays);
       const expiresAt = effectiveExpiry ? effectiveExpiry.getTime() : 0;
 
       let consentStatus;
-      if (dbRecord?.consentDeletedAt) {
+      if (doc.consentDeletedAt) {
         consentStatus = "Deleted";
-      } else if (dbRecord?.consentRevokedAt) {
+      } else if (doc.consentRevokedAt) {
         consentStatus = "Revoked";
       } else if (hasConsent && expiresAt && expiresAt < now) {
         consentStatus = "Expired";
@@ -1410,32 +1280,30 @@ router.get("/list", async (req, res) => {
         consentDaysLeft > 0 &&
         consentDaysLeft <= 30;
 
-      registrations.push({
-        sNo: Number(c(1)) || 0,
-        registrationNo,
-        fullName,
-        email: String(c(4) ?? "").trim(),
-        mobileNo: String(c(5) ?? "").trim(),
-        expiryDate: formatDate(c(6)),
-        date: formatDate(c(7)),
-        time: formatTime(c(8)),
+      return {
+        sNo: Number(doc.sNo) || 0,
+        registrationNo: doc.registrationNo,
+        fullName: doc.fullName,
+        email: doc.email || "",
+        mobileNo: doc.mobileNo || "",
+        expiryDate: doc.expiryDate || "LifeTime",
+        date: memberDate(doc),
+        time: memberTime(doc),
         consent: hasConsent,
         consentStatus,
-        consentGivenAt: dbRecord?.consentGivenAt ?? null,
-        consentRevokedAt: dbRecord?.consentRevokedAt ?? null,
-        consentDeletedAt: dbRecord?.consentDeletedAt ?? null,
+        consentGivenAt: doc.consentGivenAt ?? null,
+        consentRevokedAt: doc.consentRevokedAt ?? null,
+        consentDeletedAt: doc.consentDeletedAt ?? null,
         consentExpiresAt: effectiveExpiry,
         consentDaysLeft,
         consentExpiringSoon,
-      });
+      };
     });
-
-    registrations.sort((a, b) => b.sNo - a.sNo);
 
     return res.json({
       success: true,
       count: registrations.length,
-      consentDurationDays: await getConsentDurationDays(),
+      consentDurationDays: durationDays,
       registrations,
     });
   } catch (err) {
@@ -1443,15 +1311,42 @@ router.get("/list", async (req, res) => {
   }
 });
 
-// GET: Export all registrations as an Excel file
+// GET: Export all registrations as an Excel file (generated from the
+// database on demand - same column layout as the legacy master list).
 router.get("/export", verify, async (req, res) => {
   try {
-    if (!fs.existsSync(EXCEL_PATH)) {
+    const docs = await Registration.find({}).sort({ sNo: 1 }).lean();
+    if (docs.length === 0) {
       return res.status(404).json({
         success: false,
         error: "No registration data available to export.",
       });
     }
+
+    const workbook = new ExcelJS.Workbook();
+    const ws = workbook.addWorksheet("MembershipLists");
+    ws.addRow([
+      "S.No",
+      "Registration No",
+      "Full Name",
+      "Email Id",
+      "Mobile No",
+      "Expiry Date",
+      "Date",
+      "Time",
+    ]);
+    docs.forEach((doc) => {
+      ws.addRow([
+        doc.sNo,
+        doc.registrationNo,
+        doc.fullName,
+        doc.email || "",
+        doc.mobileNo || "",
+        doc.expiryDate || "LifeTime",
+        memberDate(doc),
+        memberTime(doc),
+      ]);
+    });
 
     res.setHeader(
       "Content-Type",
@@ -1461,7 +1356,8 @@ router.get("/export", verify, async (req, res) => {
       "Content-Disposition",
       'attachment; filename="registrations.xlsx"',
     );
-    return res.sendFile(EXCEL_PATH);
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(buffer);
   } catch (error) {
     console.error("Export error:", error);
     return res.status(500).json({
@@ -1488,79 +1384,32 @@ router.post("/add", verify, async (req, res) => {
     const providedDate = String(req.body.date || "").trim();
     const providedTime = String(req.body.time || "").trim();
 
-    const workbook = new ExcelJS.Workbook();
-    let worksheet;
-    if (fs.existsSync(EXCEL_PATH)) {
-      await workbook.xlsx.readFile(EXCEL_PATH);
-      worksheet =
-        workbook.getWorksheet("MembershipLists") || workbook.getWorksheet(1);
-    } else {
-      worksheet = workbook.addWorksheet("MembershipLists");
-      worksheet.addRow([
-        "S.No",
-        "Registration No",
-        "Full Name",
-        "Email Id",
-        "Mobile No",
-        "Expiry Date",
-        "Date",
-        "Time",
-      ]);
-    }
-
-    let maxSNo = 0;
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return;
-      const val = row.getCell(1).value;
-      const num = parseInt(val, 10);
-      if (!isNaN(num) && num > maxSNo) {
-        maxSNo = num;
-      }
-    });
-
-    const nextSNo = maxSNo > 0 ? maxSNo + 1 : 168;
-    const regNo = `AIS${String(nextSNo).padStart(4, "0")}`;
+    const sNo = await getNextSNo();
+    const regNo = makeRegNo(sNo);
 
     const now = new Date();
     const dateStr =
       providedDate || now.toISOString().split("T")[0];
     const timeStr = providedTime || now.toTimeString().split(" ")[0];
 
-    worksheet.addRow([
-      nextSNo,
-      regNo,
-      fullName,
-      email,
+    const { title, firstName } = parseNameParts(fullName);
+    const newRegistration = new Registration({
+      sNo,
+      registrationNo: regNo,
       mobileNo,
+      email,
+      title,
+      firstName,
+      lastName: "",
+      fullName,
+      country: "India",
       expiryDate,
-      dateStr,
-      timeStr,
-    ]);
-
-    await workbook.xlsx.writeFile(EXCEL_PATH);
-
-    // Save to DB as well so consent can be managed for this member.
-    // If the DB save fails (e.g. missing email/mobile), the member still
-    // exists in the Excel list - consent just cannot be managed for them.
-    try {
-      const { title, firstName } = parseNameParts(fullName);
-      const newRegistration = new Registration({
-        sNo: nextSNo,
-        registrationNo: regNo,
-        mobileNo,
-        email,
-        title,
-        firstName,
-        lastName: "",
-        fullName,
-        country: "India",
-        expiryDate,
-        consent: false,
-      });
-      await newRegistration.save();
-    } catch (dbErr) {
-      console.warn("Database save warning (add member):", dbErr.message);
-    }
+      date: dateStr,
+      time: timeStr,
+      registeredAt: now,
+      consent: false,
+    });
+    await newRegistration.save();
 
     return res.status(201).json({
       success: true,
@@ -1572,6 +1421,7 @@ router.post("/add", verify, async (req, res) => {
     return res.status(500).json({
       success: false,
       error: "Unable to add member.",
+      message: error.message,
     });
   }
 });
@@ -1598,52 +1448,30 @@ router.post("/update/:registrationNo", verify, async (req, res) => {
     const email = String(req.body.email || "").trim();
     const mobileNo = String(req.body.mobileNo || "").trim();
     const expiryDate = String(req.body.expiryDate || "LifeTime").trim();
+    const providedDate = String(req.body.date || "").trim();
+    const providedTime = String(req.body.time || "").trim();
 
-    // Update the matching row in Excel
-    let found = false;
-    if (fs.existsSync(EXCEL_PATH)) {
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.readFile(EXCEL_PATH);
-      const worksheet =
-        workbook.getWorksheet("MembershipLists") || workbook.getWorksheet(1);
-      if (worksheet) {
-        worksheet.eachRow((row, rowNumber) => {
-          if (rowNumber === 1) return;
-          const regNo = String(
-            row.getCell(2).value === null || row.getCell(2).value === undefined
-              ? ""
-              : row.getCell(2).value,
-          ).trim();
-          if (regNo === registrationNo) {
-            row.getCell(3).value = fullName;
-            row.getCell(4).value = email;
-            row.getCell(5).value = mobileNo;
-            row.getCell(6).value = expiryDate;
-            found = true;
-          }
-        });
-        if (found) {
-          await workbook.xlsx.writeFile(EXCEL_PATH);
-        }
-      }
-    }
-
-    if (!found) {
+    const member = await Registration.findOne({ registrationNo });
+    if (!member) {
       return res.status(404).json({
         success: false,
         error: "Member not found in the registration list.",
       });
     }
 
-    // Update the DB record too (if one exists)
-    const member = await Registration.findOne({ registrationNo });
-    if (member) {
-      member.fullName = fullName;
-      member.email = email;
-      member.mobileNo = mobileNo;
-      member.expiryDate = expiryDate;
-      await member.save();
-    }
+    member.fullName = fullName;
+    member.email = email;
+    member.mobileNo = mobileNo;
+    member.expiryDate = expiryDate;
+    if (providedDate) member.date = providedDate;
+    if (providedTime) member.time = providedTime;
+    // Keep the split name parts in sync so the member portal shows the
+    // updated name.
+    const { title, firstName } = parseNameParts(fullName);
+    member.title = title;
+    member.firstName = firstName;
+    member.lastName = "";
+    await member.save();
 
     return res.json({
       success: true,
@@ -1654,6 +1482,7 @@ router.post("/update/:registrationNo", verify, async (req, res) => {
     return res.status(500).json({
       success: false,
       error: "Unable to update member.",
+      message: error.message,
     });
   }
 });
@@ -1691,18 +1520,27 @@ router.get("/consent-status", async (req, res) => {
   }
 });
 
-// POST: Import registrations from an uploaded Excel file.
-// Appends the new members to the master registration Excel file AND creates
-// their database records, so imported members appear in the Registered
-// Members page with full consent management. Rows whose registration number
-// already exists in the master list or the database are skipped as
-// duplicates (so the same file can be uploaded again safely).
+// POST: Import registrations from an uploaded Excel file. Creates database
+// records so imported members appear in the Registered Members page with
+// full consent management. Rows whose registration number or email already
+// exist in the database are skipped as duplicates (so the same file can be
+// uploaded again safely).
 router.post("/import", verify, upload.single("file"), async (req, res) => {
   try {
     if (!req.file) {
       return res
         .status(400)
         .json({ success: false, error: "No file uploaded" });
+    }
+
+    // ExcelJS can only parse the modern .xlsx format - give a clear message
+    // for legacy .xls binaries instead of an unhelpful 500.
+    if (/\.xls$/i.test(req.file.originalname)) {
+      return res.status(400).json({
+        success: false,
+        error:
+          "Legacy .xls files are not supported. Please re-save the file as .xlsx and upload again.",
+      });
     }
 
     const workbook = new ExcelJS.Workbook();
@@ -1777,64 +1615,36 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
       });
     }
 
-    // Load the master registration list so new rows are appended to it and
-    // duplicates are detected.
-    const master = new ExcelJS.Workbook();
-    let masterWs;
-    if (fs.existsSync(EXCEL_PATH)) {
-      await master.xlsx.readFile(EXCEL_PATH);
-      masterWs =
-        master.getWorksheet("MembershipLists") || master.getWorksheet(1);
-    }
-    if (!masterWs) {
-      masterWs = master.addWorksheet("MembershipLists");
-      masterWs.addRow([
-        "S.No",
-        "Registration No",
-        "Full Name",
-        "Email Id",
-        "Mobile No",
-        "Expiry Date",
-        "Date",
-        "Time",
-      ]);
-    }
-
     // Existing registration numbers, emails (for duplicate detection) and
-    // max S.No from the master Excel + database.
+    // max S.No come from the database - the single source of truth.
     const existingRegNos = new Set();
     const existingEmails = new Set();
-    let maxSNo = 0;
-    masterWs.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return;
-      const regNo = String(
-        row.getCell(2).value === null || row.getCell(2).value === undefined
-          ? ""
-          : row.getCell(2).value,
-      ).trim();
-      if (regNo) existingRegNos.add(regNo);
-      const email = String(row.getCell(4).value ?? "").trim().toLowerCase();
-      if (email) existingEmails.add(email);
-      const sNo = parseInt(row.getCell(1).value, 10);
-      if (!isNaN(sNo) && sNo > maxSNo) maxSNo = sNo;
-    });
 
     const uploadedRegNos = rows
       .map((r) => r.registrationNo)
       .filter(Boolean);
+    const uploadedEmails = rows.map((r) => r.email).filter(Boolean);
     const dbRecords = await Registration.find(
       {
         $or: [
           { registrationNo: { $in: uploadedRegNos } },
-          { email: { $in: rows.map((r) => r.email).filter(Boolean) } },
+          { email: { $in: uploadedEmails } },
         ],
       },
-      { registrationNo: 1, email: 1 },
+      { registrationNo: 1, email: 1, sNo: 1 },
     ).lean();
     dbRecords.forEach((r) => {
-      existingRegNos.add(String(r.registrationNo));
+      if (r.registrationNo) {
+        existingRegNos.add(String(r.registrationNo));
+      }
       if (r.email) existingEmails.add(String(r.email).trim().toLowerCase());
     });
+
+    const maxSNoDoc = await Registration.findOne({})
+      .sort({ sNo: -1 })
+      .select("sNo")
+      .lean();
+    let maxSNo = maxSNoDoc && Number.isFinite(maxSNoDoc.sNo) ? maxSNoDoc.sNo : 0;
 
     // Merge: skip duplicates (same registration number OR email), assign
     // registration numbers where missing.
@@ -1887,22 +1697,8 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
       });
     }
 
-    // Append the new members to the master Excel file.
-    addedRows.forEach((r) => {
-      masterWs.addRow([
-        r.sNo,
-        r.registrationNo,
-        r.fullName,
-        r.email,
-        r.mobileNo,
-        r.expiryDate,
-        r.date,
-        r.time,
-      ]);
-    });
-    await master.xlsx.writeFile(EXCEL_PATH);
-
-    // Create database records so consent can be managed for imported members.
+    // Create database records for the imported members so they appear in
+    // the Registered Members page with full consent management.
     let dbCreated = 0;
     let dbFailed = 0;
     for (const r of addedRows) {
@@ -1923,14 +1719,14 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
           membershipPlan: "Lifetime",
           amount: 5000,
           expiryDate: r.expiryDate || "LifeTime",
+          date: fmtDate(r.date),
+          time: r.time,
           registeredAt: r.registeredAt || new Date(),
           consent: false,
         });
         await newRegistration.save();
         dbCreated += 1;
       } catch (dbErr) {
-        // Keep the member in the Excel list even if the DB save fails
-        // (e.g. missing email/mobile) - same behaviour as Add Member.
         console.warn("Database save warning (import):", dbErr.message);
         dbFailed += 1;
       }
@@ -1950,7 +1746,8 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
     console.error("Import error:", error);
     return res.status(500).json({
       success: false,
-      message: "Unable to import registrations.",
+      message: `Unable to import registrations: ${error.message}`,
+      error: error.message,
     });
   }
 });

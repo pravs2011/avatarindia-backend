@@ -121,6 +121,24 @@ app.use((req, res, next) => {
 //Route Middlewares
 setupRoute(app);
 
+// Error handling middleware - return JSON (e.g. for multer upload errors like
+// file-too-large) instead of Express's default HTML error page.
+app.use((err, req, res, next) => {
+  console.error("An error occurred:", err);
+
+  // Don't override responses that have already been sent
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const status = err && err.code === "LIMIT_FILE_SIZE" ? 413 : 500;
+  res.status(status).json({
+    success: false,
+    error:
+      (err && err.message) || "Internal server error",
+  });
+});
+
 //app.listen(3000, () => console.log("Server has started on PORT 3000"));
 // Starting both http & https servers
 const httpServer = http.createServer(app);

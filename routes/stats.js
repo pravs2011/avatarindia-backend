@@ -1,7 +1,4 @@
 const router = require("express").Router();
-const path = require("path");
-const fs = require("fs");
-const ExcelJS = require("exceljs");
 const Registration = require("../models/Registration");
 const ConsentLog = require("../models/ConsentLog");
 const Grievance = require("../models/Grievance");
@@ -14,11 +11,6 @@ const BoardMember = require("../models/BoardMember");
 const ExecutiveType = require("../models/ExecutiveType");
 const PageContent = require("../models/PageContent");
 const verify = require("./verifyToken");
-
-const EXCEL_PATH = path.resolve(
-  __dirname,
-  "../../send_email_to_registrants/registrations.xlsx",
-);
 
 // Consent validity duration in days (DPDP). Same source as the Registered
 // Members list endpoint, so consent statuses stay consistent.
@@ -62,65 +54,17 @@ const consentStatusOf = (dbRecord, durationDays) => {
   return "Not Given";
 };
 
-const normalizeCell = (v) => {
-  if (v === null || v === undefined) return "";
-  if (typeof v === "object") {
-    if (v instanceof Date) return v;
-    if (v.richText) return v.richText.map((t) => t.text).join("");
-    if (v.text) return v.text;
-    if (v.formula) return v.result ?? "";
-  }
-  return v;
-};
-
-// Excel stores dates as strings ("01 Mar 2024"), Date objects or serial
-// numbers; convert any of them to a Date (or null when unparseable).
-const parseExcelDate = (v) => {
-  if (v instanceof Date) return v;
-  if (typeof v === "number" && Number.isFinite(v)) {
-    // Excel serial date: days since 1899-12-30
-    return new Date(Math.round((v - 25569) * 86400000));
-  }
-  const s = String(v ?? "").trim();
-  if (!s) return null;
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
-};
-
-// Read the member list from the registration Excel file (the source of truth
-// used by the Registered Members page) and merge each row with its DB record
-// so totals and consent state match what admins see on the members page.
+// Read the member list from the database - the same source of truth used by
+// the Registered Members page - so dashboard totals and consent state match
+// exactly what admins see there.
 const loadMembers = async () => {
   const dbRegistrations = await Registration.find({}).lean();
-  const dbMap = new Map(
-    dbRegistrations.map((item) => [String(item.registrationNo), item]),
-  );
   const durationDays = await getConsentDurationDays();
-  const members = [];
-
-  if (!fs.existsSync(EXCEL_PATH)) return members;
-
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(EXCEL_PATH);
-  const worksheet =
-    workbook.getWorksheet("MembershipLists") || workbook.getWorksheet(1);
-
-  worksheet.eachRow((row, rowNumber) => {
-    if (rowNumber === 1) return;
-    const c = (i) => normalizeCell(row.getCell(i).value);
-    const registrationNo = String(c(2) ?? "").trim();
-    const fullName = String(c(3) ?? "").trim();
-    if (!registrationNo && !fullName) return;
-
-    const dbRecord = dbMap.get(registrationNo) || null;
-    members.push({
-      registrationNo,
-      registeredAt: parseExcelDate(c(7)),
-      consentStatus: consentStatusOf(dbRecord, durationDays),
-    });
-  });
-
-  return members;
+  return dbRegistrations.map((doc) => ({
+    registrationNo: doc.registrationNo,
+    registeredAt: doc.registeredAt || doc.createdAt || null,
+    consentStatus: consentStatusOf(doc, durationDays),
+  }));
 };
 
 // GET /api/stats - Website statistics dashboard (admin only)
@@ -225,8 +169,8 @@ router.get("/", verify, async (req, res) => {
       ExecutiveType.countDocuments(),
     ]);
 
-    // Member totals come from the Excel registration list (the source of
-    // truth for the members page), so the dashboard matches it exactly.
+    // Member totals come from the database (the source of truth for the
+    // members page), so the dashboard matches it exactly.
     const memberRows = await loadMembers();
     const totalMembers = memberRows.length;
     const newLast30Days = memberRows.filter(
