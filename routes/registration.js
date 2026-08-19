@@ -269,6 +269,50 @@ const sendConsentReminderEmail = async (member, loginUrl, grievanceContact) => {
   }
 };
 
+// Welcome email sent to a member upon successful registration/payment.
+// Returns boolean; never throws so flow is uninterrupted.
+const sendWelcomeMemberEmail = async (member) => {
+  const transporter = getTransporter();
+  const memberEmail = member ? member.email : "";
+
+  if (!transporter || !memberEmail) {
+    console.log(
+      `[DEV] Welcome email for ${memberEmail || "unknown"}: SMTP not configured or no email on record.`,
+    );
+    return false;
+  }
+
+  const memberName = member?.fullName || "AVATAR India Member";
+  const loginUrl =
+    process.env.FRONTEND_URL
+      ? `${process.env.FRONTEND_URL}/membership/profile`
+      : "https://avatarindia.org/membership/profile";
+
+  try {
+    const tpl = await renderTemplate("welcome_member", {
+      memberName,
+      registrationNo: member.registrationNo || "",
+      membershipPlan: member.membershipPlan || "Lifetime",
+      email: member.email || "",
+      date: member.date || new Date().toISOString().split("T")[0],
+      amount: member.amount ? `₹${member.amount}` : "₹5000",
+      loginUrl,
+    });
+
+    await transporter.sendMail({
+      from: `"AVATAR India Society" <${getMailConfig().from || "info@avatarindia.org"}>`,
+      to: memberEmail,
+      subject: tpl.subject || "Welcome to AVATAR India Society - Lifetime Membership Confirmed",
+      html: tpl.html,
+    });
+    console.log(`Welcome email successfully dispatched to ${memberEmail}`);
+    return true;
+  } catch (error) {
+    console.error("Welcome email dispatch error:", error.message);
+    return false;
+  }
+};
+
 // Multer in-memory storage for Excel import (no need to persist the upload)
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1251,6 +1295,10 @@ router.post("/register", registerRateLimiter, async (req, res) => {
         memberName: fullName,
         memberEmail: email,
       });
+
+      sendWelcomeMemberEmail(savedRegistration).catch((err) =>
+        console.error("Registration welcome email error:", err.message),
+      );
     } catch (dbErr) {
       console.warn("Database save warning:", dbErr.message);
     }
@@ -1530,6 +1578,10 @@ router.post("/verify-payment", async (req, res) => {
       memberEmail: newRegistration.email,
     });
 
+    sendWelcomeMemberEmail(newRegistration).catch((err) =>
+      console.error("Verify payment welcome email error:", err.message),
+    );
+
     // Payment is settled - remove pending record(s)
     await PendingRegistration.deleteMany({
       $or: [{ _id: pending._id }, { email: pending.email }],
@@ -1722,6 +1774,12 @@ router.post("/add", verify, async (req, res) => {
       consent: false,
     });
     await newRegistration.save();
+
+    if (newRegistration.email) {
+      sendWelcomeMemberEmail(newRegistration).catch((err) =>
+        console.error("Admin add member welcome email error:", err.message),
+      );
+    }
 
     return res.status(201).json({
       success: true,
@@ -2069,3 +2127,4 @@ module.exports.logConsentEvent = logConsentEvent;
 module.exports.checkDuplicateEmail = checkDuplicateEmail;
 module.exports.getNextSNo = getNextSNo;
 module.exports.makeRegNo = makeRegNo;
+module.exports.sendWelcomeMemberEmail = sendWelcomeMemberEmail;

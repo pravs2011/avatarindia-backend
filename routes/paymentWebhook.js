@@ -3,7 +3,11 @@ const Registration = require("../models/Registration");
 const PendingRegistration = require("../models/PendingRegistration");
 const { createNotification } = require("./notifications");
 const { verifyWebhookSignature } = require("./payment");
-const { getNextSNo, makeRegNo } = require("./registration");
+const {
+  getNextSNo,
+  makeRegNo,
+  sendWelcomeMemberEmail,
+} = require("./registration");
 
 const router = Router();
 
@@ -74,6 +78,12 @@ async function createMemberFromPending(pending, paymentId, signature) {
     memberName: member.fullName,
     memberEmail: member.email,
   });
+
+  try {
+    await sendWelcomeMemberEmail(member);
+  } catch (err) {
+    console.error("Webhook welcome email error:", err.message);
+  }
 
   return member;
 }

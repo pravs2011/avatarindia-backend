@@ -21,6 +21,7 @@ const pageContentRoute = require("./routes/pageContent");
 const statsRoute = require("./routes/stats");
 const emailTemplateRoute = require("./routes/emailTemplates");
 const documentRoute = require("./routes/documents");
+const popupRoute = require("./routes/popup");
 
 module.exports = (app) => {
   //Route Middlewares
@@ -43,4 +44,5 @@ module.exports = (app) => {
   app.use("/api/stats", statsRoute);
   app.use("/api/email-templates", emailTemplateRoute);
   app.use("/api/documents", documentRoute);
+  app.use("/api/popup", popupRoute);
 };

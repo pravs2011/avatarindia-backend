@@ -77,6 +77,44 @@ const TEMPLATE_DEFAULTS = {
     description:
       "Sent to a member when an administrator erases their consent record (right to erasure).",
   },
+  welcome_member: {
+    subject: "Welcome to AVATAR India Society - Lifetime Membership Confirmed",
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <h2 style="color: #B8860B; margin: 0 0 4px 0;">AVATAR India Society</h2>
+          <p style="font-size: 13px; color: #6b7280; margin: 0;">Association of Vascular Access &amp; inTerventionAl Renal Physicians of India</p>
+        </div>
+        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 16px 0;" />
+        <p>Dear <strong>{{memberName}}</strong>,</p>
+        <p>Welcome, you are now a lifetime member of Avatar India Society.</p>
+        <div style="background-color: #FDF8ED; border: 1px solid #F3DBA0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+          <h4 style="margin: 0 0 10px 0; color: #855517; font-size: 16px;">Membership Details</h4>
+          <p style="margin: 6px 0;"><strong>Membership ID:</strong> {{registrationNo}}</p>
+          <p style="margin: 6px 0;"><strong>Membership Plan:</strong> {{membershipPlan}}</p>
+          <p style="margin: 6px 0;"><strong>Registered Email:</strong> {{email}}</p>
+          <p style="margin: 6px 0;"><strong>Registration Date:</strong> {{date}}</p>
+        </div>
+        <p>You can now log in to the member portal using your registered email address to access exclusive resources, educational videos, and member benefits.</p>
+        <p style="text-align: center; margin: 24px 0;">
+          <a href="{{loginUrl}}" style="display: inline-block; background-color: #B8860B; color: #ffffff; padding: 12px 28px; border-radius: 6px; text-decoration: none; font-weight: 600;">Access Member Portal</a>
+        </p>
+        <p>If you have any questions or need assistance, feel free to reach out to us at <a href="mailto:info@avatarindia.org" style="color: #B8860B;">info@avatarindia.org</a>.</p>
+        <hr style="border: none; border-top: 1px solid #e5e7eb; margin: 20px 0;" />
+        <p style="font-size: 13px; color: #6b7280; text-align: center; margin: 0;">Warm regards,<br/><strong>AVATAR India Society</strong><br/><a href="https://avatarindia.org" style="color: #B8860B; text-decoration: none;">www.avatarindia.org</a></p>
+      </div>
+    `,
+    placeholders: [
+      "memberName",
+      "registrationNo",
+      "membershipPlan",
+      "email",
+      "date",
+      "loginUrl",
+    ],
+    description:
+      "Welcome email sent to newly registered members upon successful registration / payment confirmation.",
+  },
 };
 
 // Short in-memory cache so we don't hit the DB on every email (OTPs send often)
