@@ -29,6 +29,7 @@
     "nodemailer": "^9.0.5",
     "nodemon": "^3.1.9",
     "pino": "^9.6.0",
+    "razorpay": "^2.9.8",
     "react-pdf": "^9.2.1",
     "svg-captcha": "^1.4.0"
   }

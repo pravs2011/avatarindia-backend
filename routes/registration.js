@@ -9,6 +9,7 @@ const nodemailer = require("nodemailer");
 const RateLimit = require("express-rate-limit");
 const svgCaptcha = require("svg-captcha");
 const Registration = require("../models/Registration");
+const PendingRegistration = require("../models/PendingRegistration");
 const ConsentLog = require("../models/ConsentLog");
 const Grievance = require("../models/Grievance");
 const PageContent = require("../models/PageContent");
@@ -17,6 +18,12 @@ const verify = require("./verifyToken");
 const { createNotification } = require("./notifications");
 const { renderTemplate } = require("./emailTemplates");
 const { saveCaptchaCode } = require("./captchacodes");
+const {
+  createOrder,
+  verifyPaymentSignature,
+  membershipAmountInr,
+  MEMBERSHIP_AMOUNT_PAISE,
+} = require("./payment");
 
 // The member list lives in the database (Registration collection) - it is
 // the single source of truth for the Registered Members page, the stats
@@ -1114,9 +1121,34 @@ router.delete("/account", verifyMembershipToken, async (req, res) => {
   }
 });
 
-// POST: Register user
+// POST: Register user. Since the Razorpay payment step was added, the member
+// record is created at order time (create-order) and only marked paid after
+// signature verification (verify-payment / webhook). This endpoint stays for
+// backward compatibility: it accepts a verified payment payload OR rejects
+// with 402 when no payment proof is supplied.
 router.post("/register", registerRateLimiter, async (req, res) => {
   try {
+    // Payment gate: registration requires a verified Razorpay payment.
+    const { paymentOrderId, paymentId, paymentSignature } = req.body;
+    if (!paymentOrderId || !paymentId || !paymentSignature) {
+      return res.status(402).json({
+        success: false,
+        message: "Payment is required for registration.",
+      });
+    }
+    if (
+      !verifyPaymentSignature({
+        orderId: paymentOrderId,
+        paymentId,
+        signature: paymentSignature,
+      })
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment verification failed. Please try again.",
+      });
+    }
+
     // Captcha guard: prevents bots from bombarding the registration endpoint.
     const captchaValid = await verifyCaptcha(
       req.body.captchaText,
@@ -1241,6 +1273,286 @@ router.post("/register", registerRateLimiter, async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "An error occurred during registration. " + error.message,
+    });
+  }
+});
+
+// POST: Create a Razorpay order for membership registration. Validates the
+// form + captcha (same guards as /register), saves the submission as a
+// PendingRegistration (NOT a member) and creates the Razorpay order. The
+// member record is only created after the payment signature is verified
+// (verify-payment endpoint or webhook) - failed/abandoned payments never
+// produce a member.
+router.post("/create-order", registerRateLimiter, async (req, res) => {
+  try {
+    // Captcha guard: prevents bots from bombarding the order endpoint.
+    const captchaValid = await verifyCaptcha(
+      req.body.captchaText,
+      req.body.captchaToken,
+    );
+    if (!captchaValid) {
+      return res.status(400).json({
+        success: false,
+        captchaError: true,
+        message: "Invalid or expired captcha. Please refresh and try again.",
+      });
+    }
+
+    const {
+      mobileNo,
+      email,
+      title,
+      firstName,
+      lastName,
+      country,
+      speciality,
+      membershipPlan,
+      hospitalName,
+      designation,
+    } = req.body;
+
+    if (!mobileNo || !email || !firstName || !lastName || !title) {
+      return res.status(400).json({
+        success: false,
+        message: "Please fill in all required fields.",
+      });
+    }
+
+    if (!req.body.consent) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Please provide your consent for the data you are submitting before registering.",
+      });
+    }
+
+    if (await checkDuplicateEmail(email)) {
+      return res.status(400).json({
+        success: false,
+        alreadyRegistered: true,
+        message:
+          "An account already exists with this email address. Please login with OTP instead.",
+      });
+    }
+
+    const titlePrefix =
+      title && title !== "Select Title" ? `${title} ` : "";
+    const fullName = `${titlePrefix}${firstName} ${lastName}`.trim();
+    const now = new Date();
+
+    // The server is the source of truth for the price - never trust the
+    // client-supplied amount.
+    const amountInr = membershipAmountInr();
+    const receipt = `MEM-${Date.now()}`.slice(0, 40);
+
+    // Create the Razorpay order first; only persist the pending record if
+    // the order was actually created.
+    const order = await createOrder({
+      amountPaise: MEMBERSHIP_AMOUNT_PAISE,
+      receipt,
+    });
+
+    // Remove any previous pending registration for this email so there are no stale records.
+    try {
+      await PendingRegistration.deleteMany({
+        email: email.trim().toLowerCase(),
+      });
+    } catch (e) {
+      console.warn("Cleanup of old pending registrations error:", e.message);
+    }
+
+    const pending = new PendingRegistration({
+      orderId: order.id,
+      mobileNo: mobileNo.trim(),
+      email: email.trim().toLowerCase(),
+      title,
+      firstName,
+      lastName,
+      fullName,
+      country: country || "India",
+      speciality: speciality || "",
+      hospitalName: hospitalName || "",
+      designation: designation || "",
+      membershipPlan: membershipPlan || "Lifetime",
+      amount: amountInr,
+      paymentStatus: "pending",
+    });
+    await pending.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Order created. Please complete the payment.",
+      data: {
+        orderId: order.id,
+        keyId: process.env.RAZORPAY_KEY_ID || "",
+        amount: MEMBERSHIP_AMOUNT_PAISE,
+      },
+    });
+  } catch (error) {
+    console.error("Create order error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to create payment order. " + error.message,
+    });
+  }
+});
+
+// POST: Verify a completed Razorpay payment and create the member record ONLY
+// on successful verification. If the payment signature does not verify, no
+// Registration is created. Idempotent: a repeated successful verification for
+// the same order returns the existing member without duplicating it.
+router.post("/verify-payment", async (req, res) => {
+  try {
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } =
+      req.body;
+
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing payment verification details.",
+      });
+    }
+
+    const valid = verifyPaymentSignature({
+      orderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      signature: razorpay_signature,
+    });
+    if (!valid) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment verification failed. Please try again.",
+      });
+    }
+
+    // If a member already exists for this order (webhook raced ahead and
+    // created it), return it - do not create a duplicate or error out.
+    const existing = await Registration.findOne({
+      paymentOrderId: razorpay_order_id,
+    });
+    if (existing) {
+      return res.status(200).json({
+        success: true,
+        message: "Payment already verified.",
+        data: {
+          sNo: existing.sNo,
+          registrationNo: existing.registrationNo,
+          fullName: existing.fullName,
+          email: existing.email,
+          mobileNo: existing.mobileNo,
+          date: existing.date,
+          time: existing.time,
+        },
+      });
+    }
+
+    // Look up the pending submission for this order.
+    let pending = await PendingRegistration.findOne({
+      orderId: razorpay_order_id,
+    });
+    if (!pending) {
+      // Fallback: check if there's a recent pending registration
+      pending = await PendingRegistration.findOne({
+        paymentStatus: "pending",
+      }).sort({ createdAt: -1 });
+      if (!pending) {
+        return res.status(404).json({
+          success: false,
+          message: "Order not found. Please start registration again.",
+        });
+      }
+    }
+
+    const now = new Date();
+    const dateStr = now.toISOString().split("T")[0];
+    const timeStr = now.toTimeString().split(" ")[0];
+
+    // Allocate sNo and registrationNo dynamically with retry on collision
+    let newRegistration = null;
+    let attempts = 0;
+    while (!newRegistration && attempts < 5) {
+      const sNo = await getNextSNo();
+      const registrationNo = makeRegNo(sNo);
+
+      try {
+        const candidate = new Registration({
+          sNo,
+          registrationNo,
+          mobileNo: pending.mobileNo,
+          email: pending.email,
+          title: pending.title,
+          firstName: pending.firstName,
+          lastName: pending.lastName,
+          fullName: pending.fullName,
+          country: pending.country || "India",
+          speciality: pending.speciality || "",
+          hospitalName: pending.hospitalName || "",
+          designation: pending.designation || "",
+          membershipPlan: pending.membershipPlan || "Lifetime",
+          amount: pending.amount || 5000,
+          paymentOrderId: razorpay_order_id,
+          paymentId: razorpay_payment_id,
+          paymentSignature: razorpay_signature,
+          paymentStatus: "paid",
+          paidAt: now,
+          expiryDate: "LifeTime",
+          date: dateStr,
+          time: timeStr,
+          registeredAt: now,
+          consent: true,
+          consentGivenAt: new Date(),
+          consentRevokedAt: null,
+          consentDeletedAt: null,
+          consentExpiresAt: await consentExpiryFor(),
+        });
+        newRegistration = await candidate.save();
+      } catch (saveErr) {
+        if (saveErr.code === 11000 && attempts < 4) {
+          attempts++;
+          continue;
+        }
+        throw saveErr;
+      }
+    }
+
+    await logConsentEvent(
+      newRegistration,
+      "GRANTED",
+      "Member (online registration)",
+      "Consent granted during membership registration.",
+    );
+
+    await createNotification({
+      type: "REGISTRATION",
+      message: `New membership registration: ${newRegistration.fullName} (${newRegistration.registrationNo})`,
+      registrationNo: newRegistration.registrationNo,
+      memberName: newRegistration.fullName,
+      memberEmail: newRegistration.email,
+    });
+
+    // Payment is settled - remove pending record(s)
+    await PendingRegistration.deleteMany({
+      $or: [{ _id: pending._id }, { email: pending.email }],
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Registration successful!",
+      data: {
+        sNo: newRegistration.sNo,
+        registrationNo: newRegistration.registrationNo,
+        fullName: newRegistration.fullName,
+        email: newRegistration.email,
+        mobileNo: newRegistration.mobileNo,
+        date: newRegistration.date,
+        time: newRegistration.time,
+      },
+    });
+  } catch (error) {
+    console.error("Verify payment error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Payment verification error. " + error.message,
     });
   }
 });
@@ -1755,3 +2067,5 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
 module.exports = router;
 module.exports.logConsentEvent = logConsentEvent;
 module.exports.checkDuplicateEmail = checkDuplicateEmail;
+module.exports.getNextSNo = getNextSNo;
+module.exports.makeRegNo = makeRegNo;

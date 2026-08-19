@@ -6,6 +6,7 @@ const https = require("https");
 const express = require("express");
 const helmet = require("helmet");
 const setupRoute = require("./apiRoutes");
+const paymentWebhookRouter = require("./routes/paymentWebhook");
 const PORT_PRODUCTION = process.env.PRODUCTION_PORT || 4089;
 // Certificate
 const privateKey = fs.readFileSync(
@@ -45,7 +46,19 @@ mongoose.set("strictQuery", true);
 mongoose.connect(process.env.DATABASE_URL);
 const db = mongoose.connection;
 db.on("error", (err) => console.log(err));
-db.once("open", () => console.log("Connected to database"));
+db.once("open", async () => {
+  console.log("Connected to database");
+  try {
+    const coll = db.collection("pendingregistrations");
+    const indexes = await coll.indexes();
+    if (indexes.some((idx) => idx.name === "registrationNo_1")) {
+      await coll.dropIndex("registrationNo_1");
+      console.log("Dropped legacy registrationNo_1 index from pendingregistrations");
+    }
+  } catch (err) {
+    // Ignore if collection or index doesn't exist
+  }
+});
 
 //Strict Query is set to false
 mongoose.set("strictQuery", false);
@@ -82,6 +95,13 @@ app.use(helmet.hidePoweredBy());
 app.use(morgan("tiny"));
 
 //Middleware
+// Razorpay webhook must see the raw body for signature verification — mount
+// before express.json() so the body is not consumed by the JSON parser.
+app.use(
+  "/api/registration/payment-webhook",
+  express.raw({ type: "application/json" }),
+  paymentWebhookRouter,
+);
 //app.use(express.json());
 app.use(express.json({ limit: "200mb" }));
 app.use(express.urlencoded({ limit: "200mb", extended: true }));
@@ -100,7 +120,7 @@ app.use((req, res, next) => {
 app.use((req, res, next) => {
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' https://avatarindia.softedgeappstore.in http://localhost:5173 https://i.ytimg.com https://img.youtube.com data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com; connect-src 'self' https://www.youtube.com"
+    "default-src 'self'; img-src 'self' https://avatarindia.softedgeappstore.in http://localhost:5173 https://i.ytimg.com https://img.youtube.com data: blob:; script-src 'self' https://checkout.razorpay.com; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://api.razorpay.com; connect-src 'self' https://www.youtube.com https://checkout.razorpay.com https://api.razorpay.com"
   );
   next();
 });

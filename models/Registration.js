@@ -18,6 +18,18 @@ const registrationSchema = new mongoose.Schema(
     designation: { type: String, default: "" },
     membershipPlan: { type: String, default: "Lifetime" },
     amount: { type: Number, default: 5000 },
+    // Razorpay payment fields. Records are created as "pending" when the
+    // payment order is generated and flipped to "paid" once the signature
+    // is verified (browser callback or webhook).
+    paymentOrderId: { type: String, default: "" },
+    paymentId: { type: String, default: "" },
+    paymentSignature: { type: String, default: "" },
+    paymentStatus: {
+      type: String,
+      enum: ["pending", "paid", "failed", "refunded"],
+      default: "pending",
+    },
+    paidAt: { type: Date, default: null },
     expiryDate: { type: String, default: "LifeTime" },
     // Registration date / time as shown on the members page and export
     date: { type: String, default: "" },
