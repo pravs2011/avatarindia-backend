@@ -20,6 +20,16 @@ const videoGallerySchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    video_meta: {
+      type: [
+        {
+          title: { type: String, default: "" },
+          description: { type: String, default: "" },
+        },
+      ],
+      default: [],
+      _id: false,
+    },
     youtube_meta: {
       type: [
         {
@@ -27,6 +37,7 @@ const videoGallerySchema = new mongoose.Schema(
           title: { type: String, default: "" },
           author: { type: String, default: "" },
           thumbnail: { type: String, default: "" },
+          description: { type: String, default: "" },
         },
       ],
       default: [],

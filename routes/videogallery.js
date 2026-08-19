@@ -105,8 +105,8 @@ const parseYoutubeUrls = (field) => {
 };
 
 // Parse the youtube_meta form field (a JSON string of metadata objects)
-// into an array of { id, title, author, thumbnail }, dropping anything that
-// isn't a valid object or whose id isn't in the given URLs list.
+// into an array of { id, title, author, thumbnail, description }, dropping
+// anything that isn't a valid object or whose id isn't in the given URLs list.
 const parseYoutubeMeta = (field, ids) => {
   if (field === undefined || field === null || field === "") return [];
   let parsed;
@@ -127,9 +127,38 @@ const parseYoutubeMeta = (field, ids) => {
       title: String(item.title || "").trim().slice(0, 255),
       author: String(item.author || "").trim().slice(0, 120),
       thumbnail: String(item.thumbnail || "").trim().slice(0, 500),
+      description: String(item.description || "").trim().slice(0, 500),
     });
   }
   return clean;
+};
+
+// Parse the video_meta form field (a JSON string of per-video metadata)
+// into an array of { title, description } aligned with the videos array.
+const parseVideoMeta = (field, videoCount) => {
+  if (field === undefined || field === null || field === "") return null;
+  let parsed;
+  try {
+    parsed = typeof field === "string" ? JSON.parse(field) : field;
+  } catch (e) {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+
+  // Ensure we have exactly videoCount entries, padding with empty defaults
+  const meta = [];
+  for (let i = 0; i < videoCount; i++) {
+    const item = parsed[i];
+    if (item && typeof item === "object") {
+      meta.push({
+        title: String(item.title || "").trim().slice(0, 255),
+        description: String(item.description || "").trim().slice(0, 500),
+      });
+    } else {
+      meta.push({ title: "", description: "" });
+    }
+  }
+  return meta;
 };
 
 // Fetch video metadata (title, channel, thumbnail) from YouTube's free,
@@ -259,6 +288,7 @@ router.post("/add", verify, upload.array("videos", 10), async (req, res) => {
       title: req.body.title,
       description: req.body.description || "",
       videos: [],
+      video_meta: [],
       youtube_urls: [],
     };
 
@@ -267,6 +297,10 @@ router.post("/add", verify, upload.array("videos", 10), async (req, res) => {
       // Save paths without "public" prefix
       galleryData.videos = req.files.map((file) => `videos/${file.filename}`);
     }
+
+    // Parse per-video metadata (title/description for uploaded videos)
+    const videoMeta = parseVideoMeta(req.body.video_meta, galleryData.videos.length);
+    galleryData.video_meta = videoMeta;
 
     // Add YouTube video IDs if provided (normalized to bare 11-char IDs)
     const youtubeUrls = parseYoutubeUrls(req.body.youtube_urls);
@@ -317,28 +351,54 @@ router.post(
       if (req.body.description !== undefined)
         gallery.description = req.body.description;
 
-      // If new videos are uploaded, replace the existing set
-      if (req.files && req.files.length > 0) {
-        // Delete old videos
-        (gallery.videos || []).forEach(deleteVideoFile);
-        // Save new video paths without "public" prefix
-        gallery.videos = req.files.map((file) => `videos/${file.filename}`);
+      // Handle uploaded videos: the frontend sends the full combined video
+      // order via `video_order` (JSON array of paths). New uploads use a
+      // "__NEW__" placeholder that we replace with the actual uploaded paths.
+      const videoOrder = parseOrderList(req.body.video_order);
+      const newUploadedPaths = (req.files || []).map(
+        (file) => `videos/${file.filename}`
+      );
+
+      if (videoOrder) {
+        // Replace __NEW__ placeholders with actual uploaded file paths, in order
+        let newIdx = 0;
+        gallery.videos = videoOrder.map((path) => {
+          if (path === "__NEW__" && newIdx < newUploadedPaths.length) {
+            return newUploadedPaths[newIdx++];
+          }
+          return path;
+        });
+        // If there are leftover new files (shouldn't happen), append them
+        while (newIdx < newUploadedPaths.length) {
+          gallery.videos.push(newUploadedPaths[newIdx++]);
+        }
+      } else if (newUploadedPaths.length > 0) {
+        // No explicit order sent — append new uploads to existing
+        gallery.videos = [...(gallery.videos || []), ...newUploadedPaths];
       }
 
-      // Update YouTube video IDs if provided (replaces the existing set)
+      // Parse and apply per-video metadata (title/description)
+      const videoMeta = parseVideoMeta(
+        req.body.video_meta,
+        (gallery.videos || []).length
+      );
+      if (videoMeta !== null) gallery.video_meta = videoMeta;
+
+      // Update YouTube video IDs if provided
       const youtubeUrls = parseYoutubeUrls(req.body.youtube_urls);
       if (youtubeUrls !== undefined) {
         gallery.youtube_urls = youtubeUrls;
         // Refresh stored metadata, reusing provided/existing entries and
         // fetching anything new from YouTube's oEmbed endpoint
-        const existingMeta =
+        const existingYtMeta =
           (gallery.youtube_meta || []).map((m) => ({
             id: m.id,
             title: m.title || "",
             author: m.author || "",
             thumbnail: m.thumbnail || "",
+            description: m.description || "",
           }));
-        const merged = [...existingMeta, ...parseYoutubeMeta(req.body.youtube_meta, youtubeUrls)];
+        const merged = [...existingYtMeta, ...parseYoutubeMeta(req.body.youtube_meta, youtubeUrls)];
         gallery.youtube_meta = await completeYouTubeMeta(
           youtubeUrls,
           merged
@@ -347,13 +407,11 @@ router.post(
 
       // When no new videos are uploaded, support drag-and-drop reordering of
       // the existing video files via the existing_video_order field.
-      const existingVideoOrder = parseOrderList(req.body.existing_video_order);
-      if (
-        (!req.files || req.files.length === 0) &&
-        existingVideoOrder &&
-        isPermutation(existingVideoOrder, gallery.videos || [])
-      ) {
-        gallery.videos = existingVideoOrder;
+      if (!videoOrder && !newUploadedPaths.length) {
+        const existingVideoOrder = parseOrderList(req.body.existing_video_order);
+        if (existingVideoOrder && isPermutation(existingVideoOrder, gallery.videos || [])) {
+          gallery.videos = existingVideoOrder;
+        }
       }
 
       const log_id = await createLog({

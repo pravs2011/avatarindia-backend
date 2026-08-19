@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "code-review-graph": {
+      "command": "/Users/pravs/.code-review-graph-venv/bin/code-review-graph",
+      "args": ["serve"],
+      "cwd": "/Users/pravs/Documents/code/avatarindia/backend"
+    }
+  }
+}

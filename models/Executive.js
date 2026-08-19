@@ -65,6 +65,22 @@ const executiveSchema = new mongoose.Schema(
       required: false,
       max: 255,
     },
+    public_visible_fields: {
+      type: [String],
+      default: [
+        "profile_name",
+        "executive_type",
+        "profile_designation",
+        "profile_description",
+        "profile_email",
+        "profile_phone",
+        "profile_linkedin",
+        "profile_twitter",
+        "profile_facebook",
+        "profile_instagram",
+        "profile_youtube",
+      ],
+    },
   },
   {
     timestamps: true,

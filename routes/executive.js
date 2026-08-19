@@ -96,6 +96,20 @@ router.post(
   async (req, res) => {
     try {
       // Prepare executive data
+      // Parse public_visible_fields — may arrive as JSON string or comma-separated
+      let publicVisibleFields = undefined;
+      if (req.body.public_visible_fields) {
+        try {
+          const parsed = JSON.parse(req.body.public_visible_fields);
+          publicVisibleFields = Array.isArray(parsed) ? parsed : [];
+        } catch {
+          publicVisibleFields = req.body.public_visible_fields
+            .split(",")
+            .map((f) => f.trim())
+            .filter(Boolean);
+        }
+      }
+
       const executiveData = {
         profile_name: req.body.profile_name,
         executive_type_id: req.body.executive_type_id,
@@ -113,6 +127,9 @@ router.post(
             ? String(req.body.is_visible) === "true"
             : true,
       };
+      if (publicVisibleFields !== undefined) {
+        executiveData.public_visible_fields = publicVisibleFields;
+      }
 
       // Add profile picture URL if file was uploaded
       if (req.file) {
@@ -188,6 +205,19 @@ router.post(
         executive.profile_youtube = req.body.profile_youtube;
       if (req.body.is_visible !== undefined) {
         executive.is_visible = String(req.body.is_visible) === "true";
+      }
+      if (req.body.public_visible_fields !== undefined) {
+        try {
+          const parsed = JSON.parse(req.body.public_visible_fields);
+          if (Array.isArray(parsed)) {
+            executive.public_visible_fields = parsed;
+          }
+        } catch {
+          executive.public_visible_fields = req.body.public_visible_fields
+            .split(",")
+            .map((f) => f.trim())
+            .filter(Boolean);
+        }
       }
 
       // Handle new profile picture upload
