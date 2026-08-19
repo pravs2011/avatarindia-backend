@@ -1,51 +1,26 @@
 const dotenv = require("dotenv");
+dotenv.config();
+
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const https = require("https");
 const express = require("express");
 const helmet = require("helmet");
-const setupRoute = require("./apiRoutes");
-const paymentWebhookRouter = require("./routes/paymentWebhook");
-const PORT_PRODUCTION = process.env.PRODUCTION_PORT || 4089;
-// Certificate
-const privateKey = fs.readFileSync(
-  "/etc/letsencrypt/live/avatarindia.softedgeappstore.in/privkey.pem",
-  "utf8"
-);
-const certificate = fs.readFileSync(
-  "/etc/letsencrypt/live/avatarindia.softedgeappstore.in/cert.pem",
-  "utf8"
-);
-const ca = fs.readFileSync(
-  "/etc/letsencrypt/live/avatarindia.softedgeappstore.in/chain.pem",
-  "utf8"
-);
-
-const credentials = {
-  key: privateKey,
-  cert: certificate,
-  ca: ca,
-};
-
-// const dotenv = require("dotenv");
-//const express = require("express");
-const myParser = require("body-parser");
-//const fileupload = require("express-fileupload");
 const cors = require("cors");
-const app = express();
 const mongoose = require("mongoose");
 const morgan = require("morgan");
 
-//Initiate Environment Variable
-dotenv.config();
+const setupRoute = require("./apiRoutes");
+const paymentWebhookRouter = require("./routes/paymentWebhook");
 
-//Connect DB
-mongoose.set("strictQuery", true);
-//Database Initalization
+const app = express();
+
+// Database Initialization
+mongoose.set("strictQuery", false);
 mongoose.connect(process.env.DATABASE_URL);
 const db = mongoose.connection;
-db.on("error", (err) => console.log(err));
+db.on("error", (err) => console.log("Database connection error:", err));
 db.once("open", async () => {
   console.log("Connected to database");
   try {
@@ -60,41 +35,44 @@ db.once("open", async () => {
   }
 });
 
-//Strict Query is set to false
-mongoose.set("strictQuery", false);
-
-//Enable cors
-app.use(cors());
-
-//Enable cors
-
+// Enable CORS for all incoming client origins & headers
 app.use(
   cors({
-    origin: [
-      "http://localhost:5173",
-      "https://avatarindia.softedgeappstore.in",
+    origin: true,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "auth-token",
     ],
+    exposedHeaders: ["auth-token", "Authorization", "Content-Disposition"],
   })
 );
 
 app.set("trust proxy", false);
 
-//Enable secure headers
-// app.use(helmet());
+// Enable secure headers with relaxed cross-origin policies for third-party embeds (Razorpay & YouTube)
 app.use(
   helmet({
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: false, // Managed by custom CSP middleware below
   })
 );
 
-//Reduce Fingerprinting
+// Reduce Fingerprinting
 app.disable("x-powered-by");
 app.use(helmet.hidePoweredBy());
 
-//http Logger morgan
+// HTTP Logger morgan
 app.use(morgan("tiny"));
 
-//Middleware
+// Middleware
 // Razorpay webhook must see the raw body for signature verification — mount
 // before express.json() so the body is not consumed by the JSON parser.
 app.use(
@@ -102,51 +80,41 @@ app.use(
   express.raw({ type: "application/json" }),
   paymentWebhookRouter,
 );
-//app.use(express.json());
 app.use(express.json({ limit: "200mb" }));
 app.use(express.urlencoded({ limit: "200mb", extended: true }));
-//app.use(fileupload());
 
-// //Enable Public Folder
+// Enable Public Folder
 app.use(express.static("./public"));
-// Now, setup express to serve the static files and use the catch-all route
+// Catch-all static route
 app.use("/web", express.static(path.join(__dirname, "./public")));
-
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Expose-Headers", "auth-token");
-  next();
-});
+app.use("/uploads", express.static(path.join(__dirname, "./uploads")));
 
 app.use((req, res, next) => {
   res.setHeader(
+    "Access-Control-Expose-Headers",
+    "auth-token, Authorization, Content-Disposition"
+  );
+  res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; img-src 'self' https://avatarindia.softedgeappstore.in http://localhost:5173 https://i.ytimg.com https://img.youtube.com data: blob:; script-src 'self' https://checkout.razorpay.com; style-src 'self' 'unsafe-inline'; font-src 'self'; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://api.razorpay.com; connect-src 'self' https://www.youtube.com https://checkout.razorpay.com https://api.razorpay.com"
+    "default-src 'self' 'unsafe-inline' 'unsafe-eval' * data: blob:; " +
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' * https://checkout.razorpay.com https://api.razorpay.com; " +
+      "connect-src 'self' * https://api.razorpay.com https://checkout.razorpay.com https://lumberjack.razorpay.com https://lumberjack-cx.razorpay.com https://*.razorpay.com https://www.youtube.com; " +
+      "img-src * 'self' data: blob: https: http:; " +
+      "frame-src * 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com; " +
+      "style-src * 'self' 'unsafe-inline' https:; " +
+      "font-src * 'self' data: https:;"
   );
+  res.removeHeader("Cross-Origin-Embedder-Policy");
   next();
 });
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
-  );
-  if (req.method === "OPTIONS") {
-    res.header("Access-Control-Allow-Methods", "PUT, POST, PATCH, DELETE, GET");
-    return res.status(200).json({});
-  }
-  next();
-});
-
-//Route Middlewares
+// Route Middlewares
 setupRoute(app);
 
-// Error handling middleware - return JSON (e.g. for multer upload errors like
-// file-too-large) instead of Express's default HTML error page.
+// Error handling middleware
 app.use((err, req, res, next) => {
   console.error("An error occurred:", err);
 
-  // Don't override responses that have already been sent
   if (res.headersSent) {
     return next(err);
   }
@@ -154,20 +122,79 @@ app.use((err, req, res, next) => {
   const status = err && err.code === "LIMIT_FILE_SIZE" ? 413 : 500;
   res.status(status).json({
     success: false,
-    error:
-      (err && err.message) || "Internal server error",
+    error: (err && err.message) || "Internal server error",
   });
 });
 
-//app.listen(3000, () => console.log("Server has started on PORT 3000"));
-// Starting both http & https servers
+// Helper to find and load valid SSL certificates
+const loadSSLCredentials = () => {
+  if (process.env.SSL_KEY_PATH && process.env.SSL_CERT_PATH) {
+    try {
+      console.log(`Loading SSL from custom paths: ${process.env.SSL_CERT_PATH}`);
+      return {
+        key: fs.readFileSync(process.env.SSL_KEY_PATH, "utf8"),
+        cert: fs.readFileSync(process.env.SSL_CERT_PATH, "utf8"),
+        ca: process.env.SSL_CA_PATH
+          ? fs.readFileSync(process.env.SSL_CA_PATH, "utf8")
+          : undefined,
+      };
+    } catch (e) {
+      console.warn("Could not load SSL from custom env paths:", e.message);
+    }
+  }
+
+  const candidateDirs = [
+    process.env.SSL_CERT_DIR,
+    "/etc/letsencrypt/live/avatarindia.org",
+    "/etc/letsencrypt/live/www.avatarindia.org",
+    "/etc/letsencrypt/live/avatarindia.softedgeappstore.in",
+  ].filter(Boolean);
+
+  for (const dir of candidateDirs) {
+    try {
+      const keyPath = path.join(dir, "privkey.pem");
+      const certPath = path.join(dir, "cert.pem");
+      const caPath = path.join(dir, "chain.pem");
+
+      if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+        console.log(`Loading SSL certificate from ${dir}`);
+        return {
+          key: fs.readFileSync(keyPath, "utf8"),
+          cert: fs.readFileSync(certPath, "utf8"),
+          ca: fs.existsSync(caPath) ? fs.readFileSync(caPath, "utf8") : undefined,
+        };
+      }
+    } catch (e) {
+      // Continue searching next directory
+    }
+  }
+
+  console.warn("⚠️ No SSL certificates found in candidate paths.");
+  return null;
+};
+
+const credentials = loadSSLCredentials();
+const PORT_PRODUCTION = Number(process.env.PRODUCTION_PORT || 4089);
+const HTTP_PORT = Number(process.env.HTTP_PORT || 3020);
+
+// Start HTTP server
 const httpServer = http.createServer(app);
-const httpsServer = https.createServer(credentials, app);
-/*
-httpServer.listen(80, () => {
-	console.log('HTTP Server running on port 80');
+httpServer.listen(HTTP_PORT, () => {
+  console.log(`HTTP Server running on port ${HTTP_PORT}`);
 });
-*/
-httpsServer.listen(PORT_PRODUCTION, () => {
-  console.log(`HTTPS Server running on port ${PORT_PRODUCTION}`);
-});
+
+// Start HTTPS server if certificates exist
+if (credentials && credentials.key && credentials.cert) {
+  try {
+    const httpsServer = https.createServer(credentials, app);
+    httpsServer.listen(PORT_PRODUCTION, () => {
+      console.log(`HTTPS Server running on port ${PORT_PRODUCTION}`);
+    });
+  } catch (err) {
+    console.error("Failed to start HTTPS server:", err.message);
+  }
+} else {
+  console.log(
+    `HTTPS server skipped (no valid SSL certificates found). HTTP server active on port ${HTTP_PORT}.`
+  );
+}

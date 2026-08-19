@@ -65,30 +65,40 @@ db.once("open", async () => {
   }
 });
 
-app.use(cors());
-
-// app.use(myParser);
-
-//Enable cors
+//Enable CORS for all incoming client origins & headers
 app.use(
   cors({
-    origin: "http://192.168.29.52:3006",
-  })
-);
-app.use(
-  cors({
-    origin: "http://localhost:3006",
+    origin: true,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Origin",
+      "X-Requested-With",
+      "Content-Type",
+      "Accept",
+      "Authorization",
+      "auth-token",
+    ],
+    exposedHeaders: ["auth-token", "Authorization"],
   })
 );
 
 app.set("trust proxy", false);
 
-//Enable secure headers
-//app.use(helmet());
+//Enable secure headers with relaxed cross-origin embedder policy for Razorpay & YouTube
+app.use(
+  helmet({
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    contentSecurityPolicy: false,
+    frameguard: false,
+  })
+);
 
 //Reduce Fingerprinting
 app.disable("x-powered-by");
-//app.use(helmet.hidePoweredBy());
+app.use(helmet.hidePoweredBy());
 
 //http Logger morgan
 app.use(morgan("tiny"));
@@ -101,13 +111,10 @@ app.use(
   express.raw({ type: "application/json" }),
   paymentWebhookRouter,
 );
-//app.use(express.json());
 app.use(express.json({ limit: "200mb" }));
 app.use(express.urlencoded({ limit: "200mb", extended: true }));
-// Remove fileupload middleware as it conflicts with multer
-// app.use(fileupload());
 
-// //Enable Public Folder
+//Enable Public Folder
 // Serve the public folder at root (matches server.js) so uploaded
 // files (profile images, gallery images/videos) resolve in local dev
 app.use(express.static("./public"));
@@ -117,24 +124,21 @@ app.use("/web", express.static(path.join(__dirname, "./public")));
 app.use("/uploads", express.static(path.join(__dirname, "./uploads")));
 
 app.use((req, res, next) => {
-  res.setHeader("Access-Control-Expose-Headers", "auth-token");
-  next();
-});
-
-app.use(function (req, res, next) {
+  res.setHeader(
+    "Access-Control-Expose-Headers",
+    "auth-token, Authorization, Content-Disposition"
+  );
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'http://localhost:3006' 'self'; script-src 'self' https://checkout.razorpay.com; style-src 'self'; font-src 'self'; img-src 'self' https://i.ytimg.com https://img.youtube.com; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://api.razorpay.com; connect-src 'self' https://www.youtube.com https://checkout.razorpay.com https://api.razorpay.com"
+    "default-src 'self' 'unsafe-inline' 'unsafe-eval' * data: blob:; " +
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' * https://checkout.razorpay.com https://api.razorpay.com https://cdn.razorpay.com; " +
+      "connect-src 'self' * https://api.razorpay.com https://checkout.razorpay.com https://cdn.razorpay.com https://lumberjack.razorpay.com https://lumberjack-cx.razorpay.com https://*.razorpay.com https://www.youtube.com; " +
+      "img-src * 'self' data: blob: https: http:; " +
+      "frame-src * 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com; " +
+      "style-src * 'self' 'unsafe-inline' https:; " +
+      "font-src * 'self' data: https:;"
   );
-  next();
-});
-
-app.use(function (req, res, next) {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept"
-  );
+  res.removeHeader("Cross-Origin-Embedder-Policy");
   next();
 });
 
