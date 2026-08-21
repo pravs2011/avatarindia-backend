@@ -28,7 +28,9 @@ db.once("open", async () => {
     const indexes = await coll.indexes();
     if (indexes.some((idx) => idx.name === "registrationNo_1")) {
       await coll.dropIndex("registrationNo_1");
-      console.log("Dropped legacy registrationNo_1 index from pendingregistrations");
+      console.log(
+        "Dropped legacy registrationNo_1 index from pendingregistrations",
+      );
     }
   } catch (err) {
     // Ignore if collection or index doesn't exist
@@ -50,7 +52,7 @@ app.use(
       "auth-token",
     ],
     exposedHeaders: ["auth-token", "Authorization", "Content-Disposition"],
-  })
+  }),
 );
 
 app.set("trust proxy", false);
@@ -62,7 +64,7 @@ app.use(
     crossOriginOpenerPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: false, // Managed by custom CSP middleware below
-  })
+  }),
 );
 
 // Reduce Fingerprinting
@@ -92,7 +94,7 @@ app.use("/uploads", express.static(path.join(__dirname, "./uploads")));
 app.use((req, res, next) => {
   res.setHeader(
     "Access-Control-Expose-Headers",
-    "auth-token, Authorization, Content-Disposition"
+    "auth-token, Authorization, Content-Disposition",
   );
   res.setHeader(
     "Content-Security-Policy",
@@ -102,7 +104,7 @@ app.use((req, res, next) => {
       "img-src * 'self' data: blob: https: http:; " +
       "frame-src * 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com; " +
       "style-src * 'self' 'unsafe-inline' https:; " +
-      "font-src * 'self' data: https:;"
+      "font-src * 'self' data: https:;",
   );
   res.removeHeader("Cross-Origin-Embedder-Policy");
   next();
@@ -130,7 +132,9 @@ app.use((err, req, res, next) => {
 const loadSSLCredentials = () => {
   if (process.env.SSL_KEY_PATH && process.env.SSL_CERT_PATH) {
     try {
-      console.log(`Loading SSL from custom paths: ${process.env.SSL_CERT_PATH}`);
+      console.log(
+        `Loading SSL from custom paths: ${process.env.SSL_CERT_PATH}`,
+      );
       return {
         key: fs.readFileSync(process.env.SSL_KEY_PATH, "utf8"),
         cert: fs.readFileSync(process.env.SSL_CERT_PATH, "utf8"),
@@ -161,7 +165,9 @@ const loadSSLCredentials = () => {
         return {
           key: fs.readFileSync(keyPath, "utf8"),
           cert: fs.readFileSync(certPath, "utf8"),
-          ca: fs.existsSync(caPath) ? fs.readFileSync(caPath, "utf8") : undefined,
+          ca: fs.existsSync(caPath)
+            ? fs.readFileSync(caPath, "utf8")
+            : undefined,
         };
       }
     } catch (e) {
@@ -175,7 +181,7 @@ const loadSSLCredentials = () => {
 
 const credentials = loadSSLCredentials();
 const PORT_PRODUCTION = Number(process.env.PRODUCTION_PORT || 4089);
-const HTTP_PORT = Number(process.env.HTTP_PORT || 3020);
+const HTTP_PORT = Number(process.env.HTTP_PORT || 3030);
 
 // Start HTTP server
 const httpServer = http.createServer(app);
@@ -195,6 +201,6 @@ if (credentials && credentials.key && credentials.cert) {
   }
 } else {
   console.log(
-    `HTTPS server skipped (no valid SSL certificates found). HTTP server active on port ${HTTP_PORT}.`
+    `HTTPS server skipped (no valid SSL certificates found). HTTP server active on port ${HTTP_PORT}.`,
   );
 }

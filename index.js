@@ -39,7 +39,7 @@ const logger = pino(
     enabled: (name, level) => level >= this.levelVal,
     timestamp: pino.stdTimeFunctions.isoTime,
   },
-  logFile
+  logFile,
 );
 
 //Initiate Environment Variable
@@ -58,7 +58,9 @@ db.once("open", async () => {
     const indexes = await coll.indexes();
     if (indexes.some((idx) => idx.name === "registrationNo_1")) {
       await coll.dropIndex("registrationNo_1");
-      console.log("Dropped legacy registrationNo_1 index from pendingregistrations");
+      console.log(
+        "Dropped legacy registrationNo_1 index from pendingregistrations",
+      );
     }
   } catch (err) {
     // Ignore if collection or index doesn't exist
@@ -80,7 +82,7 @@ app.use(
       "auth-token",
     ],
     exposedHeaders: ["auth-token", "Authorization"],
-  })
+  }),
 );
 
 app.set("trust proxy", false);
@@ -93,7 +95,7 @@ app.use(
     crossOriginResourcePolicy: { policy: "cross-origin" },
     contentSecurityPolicy: false,
     frameguard: false,
-  })
+  }),
 );
 
 //Reduce Fingerprinting
@@ -126,7 +128,7 @@ app.use("/uploads", express.static(path.join(__dirname, "./uploads")));
 app.use((req, res, next) => {
   res.setHeader(
     "Access-Control-Expose-Headers",
-    "auth-token, Authorization, Content-Disposition"
+    "auth-token, Authorization, Content-Disposition",
   );
   res.setHeader(
     "Content-Security-Policy",
@@ -136,7 +138,7 @@ app.use((req, res, next) => {
       "img-src * 'self' data: blob: https: http:; " +
       "frame-src * 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com; " +
       "style-src * 'self' 'unsafe-inline' https:; " +
-      "font-src * 'self' data: https:;"
+      "font-src * 'self' data: https:;",
   );
   res.removeHeader("Cross-Origin-Embedder-Policy");
   next();
@@ -173,4 +175,4 @@ app.use((req, res, next) => {
   res.status(404).json({ error: "404 - Not Found" });
 });
 
-app.listen(3020, () => console.log("Server has started on PORT 3020"));
+app.listen(3030, () => console.log("Server has started on PORT 3030"));

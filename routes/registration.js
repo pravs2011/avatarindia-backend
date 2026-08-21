@@ -133,7 +133,10 @@ const logConsentEvent = async (
 const getMailConfig = () => {
   const port = Number(process.env.SMTP_PORT || process.env.EMAIL_PORT || 587);
   return {
-    host: process.env.SMTP_SERVER || process.env.EMAIL_HOST || process.env.SMTP_HOST,
+    host:
+      process.env.SMTP_SERVER ||
+      process.env.EMAIL_HOST ||
+      process.env.SMTP_HOST,
     port,
     secure:
       String(process.env.EMAIL_SECURE || "").toLowerCase() === "true"
@@ -208,10 +211,13 @@ const sendConsentNotificationEmail = async (member, action) => {
   const memberName = member?.fullName || "AVATAR India Member";
   const eventDate = new Date().toLocaleString();
 
-  const tpl = await renderTemplate(isRevoke ? "consent_revoked" : "consent_deleted", {
-    memberName,
-    date: eventDate,
-  });
+  const tpl = await renderTemplate(
+    isRevoke ? "consent_revoked" : "consent_deleted",
+    {
+      memberName,
+      date: eventDate,
+    },
+  );
 
   try {
     await transporter.sendMail({
@@ -283,10 +289,9 @@ const sendWelcomeMemberEmail = async (member) => {
   }
 
   const memberName = member?.fullName || "AVATAR India Member";
-  const loginUrl =
-    process.env.FRONTEND_URL
-      ? `${process.env.FRONTEND_URL}/membership/profile`
-      : "https://avatarindia.org/membership/profile";
+  const loginUrl = process.env.FRONTEND_URL
+    ? `${process.env.FRONTEND_URL}/membership/profile`
+    : "https://avatarindia.org/membership/profile";
 
   try {
     const tpl = await renderTemplate("welcome_member", {
@@ -302,7 +307,9 @@ const sendWelcomeMemberEmail = async (member) => {
     await transporter.sendMail({
       from: `"AVATAR India Society" <${getMailConfig().from || "info@avatarindia.org"}>`,
       to: memberEmail,
-      subject: tpl.subject || "Welcome to AVATAR India Society - Lifetime Membership Confirmed",
+      subject:
+        tpl.subject ||
+        "Welcome to AVATAR India Society - Lifetime Membership Confirmed",
       html: tpl.html,
     });
     console.log(`Welcome email successfully dispatched to ${memberEmail}`);
@@ -334,7 +341,9 @@ const makeRegNo = (sNo) => `AIS${String(sNo).padStart(4, "0")}`;
 
 // Case-insensitive duplicate check for a registered email across the DB.
 const checkDuplicateEmail = async (email) => {
-  const normalized = String(email || "").trim().toLowerCase();
+  const normalized = String(email || "")
+    .trim()
+    .toLowerCase();
   if (!normalized) return false;
 
   const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -558,6 +567,49 @@ router.post("/verify-otp", async (req, res) => {
     return res.status(500).json({
       success: false,
       message: "Unable to verify OTP.",
+    });
+  }
+});
+
+// GET /member-directory - searchable directory for authenticated members.
+// Return only the fields members need to identify and contact one another.
+router.get("/member-directory", verifyMembershipToken, async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+    const filter = { consentDeletedAt: null };
+
+    if (search) {
+      const escapedSearch = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const searchRegex = new RegExp(escapedSearch, "i");
+      filter.$or = [
+        { fullName: searchRegex },
+        { email: searchRegex },
+        { hospitalName: searchRegex },
+      ];
+    }
+
+    const members = await Registration.find(filter)
+      .select("fullName email mobileNo hospitalName")
+      .sort({ fullName: 1 })
+      .limit(limit)
+      .lean();
+
+    return res.json({
+      success: true,
+      members: members.map((member) => ({
+        _id: member._id,
+        fullName: member.fullName || "AVATAR India Member",
+        email: member.email || "Not provided",
+        mobileNo: member.mobileNo || "Phone not provided",
+        hospitalName: member.hospitalName || "Hospital not provided",
+      })),
+    });
+  } catch (error) {
+    console.error("Member directory error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load the member directory.",
     });
   }
 });
@@ -929,7 +981,10 @@ router.post("/consent-reminder", verify, async (req, res) => {
       // Targeted re-ask: any member without active (unexpired) consent
       filter = {
         registrationNo: { $in: requested },
-        $or: [{ consent: false }, { consent: true, consentExpiresAt: { $lt: new Date() } }],
+        $or: [
+          { consent: false },
+          { consent: true, consentExpiresAt: { $lt: new Date() } },
+        ],
       };
     } else {
       // Bulk: consent never given, not revoked and not erased
@@ -1244,8 +1299,7 @@ router.post("/register", registerRateLimiter, async (req, res) => {
       });
     }
 
-    const titlePrefix =
-      title && title !== "Select Title" ? `${title} ` : "";
+    const titlePrefix = title && title !== "Select Title" ? `${title} ` : "";
     const fullName = `${titlePrefix}${firstName} ${lastName}`.trim();
     const sNo = await getNextSNo();
     const regNo = makeRegNo(sNo);
@@ -1383,8 +1437,7 @@ router.post("/create-order", registerRateLimiter, async (req, res) => {
       });
     }
 
-    const titlePrefix =
-      title && title !== "Select Title" ? `${title} ` : "";
+    const titlePrefix = title && title !== "Select Title" ? `${title} ` : "";
     const fullName = `${titlePrefix}${firstName} ${lastName}`.trim();
     const now = new Date();
 
@@ -1752,8 +1805,7 @@ router.post("/add", verify, async (req, res) => {
     const regNo = makeRegNo(sNo);
 
     const now = new Date();
-    const dateStr =
-      providedDate || now.toISOString().split("T")[0];
+    const dateStr = providedDate || now.toISOString().split("T")[0];
     const timeStr = providedTime || now.toTimeString().split(" ")[0];
 
     const { title, firstName } = parseNameParts(fullName);
@@ -1990,9 +2042,7 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
     const existingRegNos = new Set();
     const existingEmails = new Set();
 
-    const uploadedRegNos = rows
-      .map((r) => r.registrationNo)
-      .filter(Boolean);
+    const uploadedRegNos = rows.map((r) => r.registrationNo).filter(Boolean);
     const uploadedEmails = rows.map((r) => r.email).filter(Boolean);
     const dbRecords = await Registration.find(
       {
@@ -2014,7 +2064,8 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
       .sort({ sNo: -1 })
       .select("sNo")
       .lean();
-    let maxSNo = maxSNoDoc && Number.isFinite(maxSNoDoc.sNo) ? maxSNoDoc.sNo : 0;
+    let maxSNo =
+      maxSNoDoc && Number.isFinite(maxSNoDoc.sNo) ? maxSNoDoc.sNo : 0;
 
     // Merge: skip duplicates (same registration number OR email), assign
     // registration numbers where missing.
