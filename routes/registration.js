@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const crypto = require("crypto");
+const fs = require("fs");
+const path = require("path");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
@@ -36,6 +38,11 @@ const registerRateLimiter = RateLimit({ max: 5, windowMS: 10 * 60 * 1000 });
 const captchaRateLimiter = RateLimit({ max: 30, windowMS: 10 * 60 * 1000 });
 
 const JWT_SECRET = process.env.JWT_TOKEN_SECRET || "avatarindia-local-secret";
+const EDUCATIONAL_QUALIFICATIONS = [
+  "Bachelor's Degree",
+  "Master's Degree",
+  "Doctorate/Doctoral Degree",
+];
 
 const verifyMembershipToken = require("../middleware/memberAuth");
 
@@ -325,6 +332,52 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
 });
+
+const degreeCertificateDir = path.join(
+  __dirname,
+  "../uploads/degree-certificates",
+);
+const degreeCertificateStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    fs.mkdirSync(degreeCertificateDir, { recursive: true });
+    cb(null, degreeCertificateDir);
+  },
+  filename: (_req, file, cb) => {
+    const uniqueName = `degree-${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
+    cb(
+      null,
+      `${uniqueName}${path.extname(file.originalname || "").toLowerCase()}`,
+    );
+  },
+});
+const degreeCertificateUpload = multer({
+  storage: degreeCertificateStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (
+      file.mimetype === "application/pdf" ||
+      file.mimetype.startsWith("image/")
+    ) {
+      return cb(null, true);
+    }
+    cb(new Error("Only PDF and image files are allowed for the degree certificate."));
+  },
+});
+const uploadDegreeCertificate = (req, res, next) => {
+  degreeCertificateUpload.single("degreeCertificate")(req, res, (error) => {
+    if (error) {
+      return res.status(400).json({ success: false, message: error.message });
+    }
+    next();
+  });
+};
+const storedDegreeCertificatePath = (file) =>
+  file ? path.join("uploads", "degree-certificates", file.filename) : "";
+const deleteDegreeCertificate = (certificatePath) => {
+  if (!certificatePath) return;
+  const absolutePath = path.join(__dirname, "..", certificatePath);
+  if (fs.existsSync(absolutePath)) fs.unlinkSync(absolutePath);
+};
 
 // Next sequential S.No for newly created members (the legacy Excel list
 // convention started at 168 when the list was empty).
@@ -1385,7 +1438,11 @@ router.post("/register", registerRateLimiter, async (req, res) => {
 // member record is only created after the payment signature is verified
 // (verify-payment endpoint or webhook) - failed/abandoned payments never
 // produce a member.
-router.post("/create-order", registerRateLimiter, async (req, res) => {
+router.post(
+  "/create-order",
+  registerRateLimiter,
+  uploadDegreeCertificate,
+  async (req, res) => {
   try {
     // Captcha guard: prevents bots from bombarding the order endpoint.
     const captchaValid = await verifyCaptcha(
@@ -1393,6 +1450,7 @@ router.post("/create-order", registerRateLimiter, async (req, res) => {
       req.body.captchaToken,
     );
     if (!captchaValid) {
+      deleteDegreeCertificate(storedDegreeCertificatePath(req.file));
       return res.status(400).json({
         success: false,
         captchaError: true,
@@ -1408,19 +1466,38 @@ router.post("/create-order", registerRateLimiter, async (req, res) => {
       lastName,
       country,
       speciality,
+      educationalQualification,
       membershipPlan,
       hospitalName,
       designation,
     } = req.body;
 
-    if (!mobileNo || !email || !firstName || !lastName || !title) {
+    if (
+      !mobileNo ||
+      !email ||
+      !firstName ||
+      !lastName ||
+      !title ||
+      !educationalQualification ||
+      !req.file
+    ) {
+      deleteDegreeCertificate(storedDegreeCertificatePath(req.file));
       return res.status(400).json({
         success: false,
-        message: "Please fill in all required fields.",
+        message: "Please fill in all required fields and upload your degree certificate.",
+      });
+    }
+
+    if (!EDUCATIONAL_QUALIFICATIONS.includes(educationalQualification)) {
+      deleteDegreeCertificate(storedDegreeCertificatePath(req.file));
+      return res.status(400).json({
+        success: false,
+        message: "Please select a valid educational qualification.",
       });
     }
 
     if (!req.body.consent) {
+      deleteDegreeCertificate(storedDegreeCertificatePath(req.file));
       return res.status(400).json({
         success: false,
         message:
@@ -1429,6 +1506,7 @@ router.post("/create-order", registerRateLimiter, async (req, res) => {
     }
 
     if (await checkDuplicateEmail(email)) {
+      deleteDegreeCertificate(storedDegreeCertificatePath(req.file));
       return res.status(400).json({
         success: false,
         alreadyRegistered: true,
@@ -1455,9 +1533,17 @@ router.post("/create-order", registerRateLimiter, async (req, res) => {
 
     // Remove any previous pending registration for this email so there are no stale records.
     try {
+      const previousPending = await PendingRegistration.find({
+        email: email.trim().toLowerCase(),
+      })
+        .select("degreeCertificatePath")
+        .lean();
       await PendingRegistration.deleteMany({
         email: email.trim().toLowerCase(),
       });
+      previousPending.forEach((item) =>
+        deleteDegreeCertificate(item.degreeCertificatePath),
+      );
     } catch (e) {
       console.warn("Cleanup of old pending registrations error:", e.message);
     }
@@ -1472,6 +1558,11 @@ router.post("/create-order", registerRateLimiter, async (req, res) => {
       fullName,
       country: country || "India",
       speciality: speciality || "",
+      educationalQualification,
+      degreeCertificatePath: storedDegreeCertificatePath(req.file),
+      degreeCertificateName: req.file.originalname,
+      degreeCertificateMimeType: req.file.mimetype,
+      degreeCertificateSize: req.file.size,
       hospitalName: hospitalName || "",
       designation: designation || "",
       membershipPlan: membershipPlan || "Lifetime",
@@ -1490,13 +1581,15 @@ router.post("/create-order", registerRateLimiter, async (req, res) => {
       },
     });
   } catch (error) {
+    deleteDegreeCertificate(storedDegreeCertificatePath(req.file));
     console.error("Create order error:", error);
     return res.status(500).json({
       success: false,
       message: "Unable to create payment order. " + error.message,
     });
   }
-});
+  },
+);
 
 // POST: Verify a completed Razorpay payment and create the member record ONLY
 // on successful verification. If the payment signature does not verify, no
@@ -1587,6 +1680,11 @@ router.post("/verify-payment", async (req, res) => {
           fullName: pending.fullName,
           country: pending.country || "India",
           speciality: pending.speciality || "",
+          educationalQualification: pending.educationalQualification || "",
+          degreeCertificatePath: pending.degreeCertificatePath || "",
+          degreeCertificateName: pending.degreeCertificateName || "",
+          degreeCertificateMimeType: pending.degreeCertificateMimeType || "",
+          degreeCertificateSize: pending.degreeCertificateSize || 0,
           hospitalName: pending.hospitalName || "",
           designation: pending.designation || "",
           membershipPlan: pending.membershipPlan || "Lifetime",
