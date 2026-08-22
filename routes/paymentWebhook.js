@@ -6,7 +6,7 @@ const { verifyWebhookSignature } = require("./payment");
 const {
   getNextSNo,
   makeRegNo,
-  sendWelcomeMemberEmail,
+  sendPendingMembershipEmail,
 } = require("./registration");
 
 const router = Router();
@@ -24,11 +24,62 @@ async function createMemberFromPending(pending, paymentId, signature) {
   const dateStr = now.toISOString().split("T")[0];
   const timeStr = now.toTimeString().split(" ")[0];
 
-  let member = null;
+  let member = await Registration.findOne({
+    email: pending.email,
+    membershipStatus: "REJECTED",
+  });
+  if (member) {
+    Object.assign(member, {
+      registrationNo: `PENDING-${require("crypto").randomBytes(12).toString("hex")}`,
+      mobileNo: pending.mobileNo,
+      email: pending.email,
+      title: pending.title,
+      firstName: pending.firstName,
+      lastName: pending.lastName,
+      fullName: pending.fullName,
+      country: pending.country || "India",
+      speciality: pending.speciality || "",
+      educationalQualification: pending.educationalQualification || "",
+      degreeCertificatePath: pending.degreeCertificatePath || "",
+      degreeCertificateName: pending.degreeCertificateName || "",
+      degreeCertificateMimeType: pending.degreeCertificateMimeType || "",
+      degreeCertificateSize: pending.degreeCertificateSize || 0,
+      hospitalName: pending.hospitalName || "",
+      designation: pending.designation || "",
+      membershipPlan: pending.membershipPlan || "Lifetime",
+      amount: pending.amount || 5000,
+      paymentOrderId: pending.orderId,
+      paymentId: paymentId || "",
+      paymentSignature: signature || "",
+      paymentStatus: "paid",
+      paidAt: now,
+      refundStatus: "NOT_REQUESTED",
+      refundId: "",
+      refundAmount: 0,
+      refundInitiatedAt: null,
+      refundError: "",
+      membershipStatus: "PENDING",
+      approvedAt: null,
+      approvedBy: null,
+      rejectionReason: "",
+      rejectedAt: null,
+      rejectedBy: null,
+      registeredAt: now,
+      date: dateStr,
+      time: timeStr,
+    });
+    member.reviewHistory = member.reviewHistory || [];
+    member.reviewHistory.push({
+      action: "REAPPLIED",
+      reason: "New membership application submitted after previous denial.",
+      reviewedAt: now,
+    });
+    member = await member.save();
+  }
   let attempts = 0;
   while (!member && attempts < 5) {
     const sNo = await getNextSNo();
-    const registrationNo = makeRegNo(sNo);
+    const registrationNo = `PENDING-${require("crypto").randomBytes(12).toString("hex")}`;
 
     try {
       const newMember = new Registration({
@@ -79,13 +130,13 @@ async function createMemberFromPending(pending, paymentId, signature) {
   await createNotification({
     type: "REGISTRATION",
     message: `New membership registration: ${member.fullName} (${member.registrationNo})`,
-    registrationNo: member.registrationNo,
+    registrationNo: "",
     memberName: member.fullName,
     memberEmail: member.email,
   });
 
   try {
-    await sendWelcomeMemberEmail(member);
+    await sendPendingMembershipEmail(member);
   } catch (err) {
     console.error("Webhook welcome email error:", err.message);
   }

@@ -24,6 +24,12 @@ async function createOrder({ amountPaise, receipt }) {
   });
 }
 
+async function refundPayment(paymentId, amountPaise) {
+  if (!paymentId) throw new Error("A Razorpay payment ID is required for refund.");
+  const options = amountPaise ? { amount: amountPaise } : {};
+  return razorpayInstance().payments.refund(paymentId, options);
+}
+
 // Verify the signature Razorpay returns in the browser callback
 // (order_id|payment_id signed with the key secret).
 function verifyPaymentSignature({ orderId, paymentId, signature }) {
@@ -50,6 +56,7 @@ function verifyWebhookSignature(rawBody, signature) {
 
 module.exports = {
   createOrder,
+  refundPayment,
   verifyPaymentSignature,
   verifyWebhookSignature,
   membershipAmountInr,

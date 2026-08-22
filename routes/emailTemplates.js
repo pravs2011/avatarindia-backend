@@ -115,6 +115,27 @@ const TEMPLATE_DEFAULTS = {
     description:
       "Welcome email sent to newly registered members upon successful registration / payment confirmation.",
   },
+  pending_membership: {
+    subject: "AVATAR India Society - Registration Received and Under Review",
+    html: `
+      <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e5e7eb; border-radius: 8px;">
+        <h2 style="color: #B8860B;">Registration received by AVATAR India Society</h2>
+        <p>Dear <strong>{{memberName}}</strong>,</p>
+        <p>Thank you for submitting your membership application to AVATAR India Society. We have received your payment and registration details successfully.</p>
+        <p>Your application is currently being vetted by our team. This email does not confirm membership. We will notify you by email only after your application has been reviewed and approved.</p>
+        <div style="background-color: #FDF8ED; border: 1px solid #F3DBA0; border-radius: 8px; padding: 16px; margin: 20px 0;">
+          <p style="margin: 6px 0;"><strong>Registration No:</strong> {{registrationNo}}</p>
+          <p style="margin: 6px 0;"><strong>Registered Email:</strong> {{email}}</p>
+          <p style="margin: 6px 0;"><strong>Status:</strong> Pending admin approval</p>
+        </div>
+        <p>You will be able to log in to the member portal after your registration is approved.</p>
+        <p>Regards,<br/><strong>AVATAR India Society</strong></p>
+      </div>
+    `,
+    placeholders: ["memberName", "registrationNo", "email"],
+    description:
+      "Sent after successful online membership payment while the registration is awaiting admin approval.",
+  },
 };
 
 // Short in-memory cache so we don't hit the DB on every email (OTPs send often)

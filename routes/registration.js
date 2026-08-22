@@ -25,6 +25,7 @@ const {
   verifyPaymentSignature,
   membershipAmountInr,
   MEMBERSHIP_AMOUNT_PAISE,
+  refundPayment,
 } = require("./payment");
 
 // The member list lives in the database (Registration collection) - it is
@@ -327,6 +328,38 @@ const sendWelcomeMemberEmail = async (member) => {
   }
 };
 
+// Confirmation email sent after online payment while admin approval is pending.
+// Returns boolean; never throws so payment completion is not interrupted.
+const sendPendingMembershipEmail = async (member) => {
+  const transporter = getTransporter();
+  const memberEmail = member ? member.email : "";
+
+  if (!transporter || !memberEmail) {
+    console.log(
+      `[DEV] Pending membership email for ${memberEmail || "unknown"}: SMTP not configured or no email on record.`,
+    );
+    return false;
+  }
+
+  try {
+    const tpl = await renderTemplate("pending_membership", {
+      memberName: member.fullName || "AVATAR India Member",
+      registrationNo: member.registrationNo || "",
+      email: member.email || "",
+    });
+    await transporter.sendMail({
+      from: getMailConfig().from,
+      to: memberEmail,
+      subject: tpl.subject,
+      html: tpl.html,
+    });
+    return true;
+  } catch (error) {
+    console.error("Pending membership email error:", error.message);
+    return false;
+  }
+};
+
 // Multer in-memory storage for Excel import (no need to persist the upload)
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -393,17 +426,19 @@ const getNextSNo = async () => {
 const makeRegNo = (sNo) => `AIS${String(sNo).padStart(4, "0")}`;
 
 // Case-insensitive duplicate check for a registered email across the DB.
-const checkDuplicateEmail = async (email) => {
+const checkDuplicateEmail = async (email, options = {}) => {
   const normalized = String(email || "")
     .trim()
     .toLowerCase();
   if (!normalized) return false;
 
   const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const existing = await Registration.findOne({
+    email: new RegExp(`^${escaped}$`, "i"),
+  }).select("membershipStatus");
   return Boolean(
-    await Registration.findOne({
-      email: new RegExp(`^${escaped}$`, "i"),
-    }),
+    existing &&
+      !(options.allowRejected && existing.membershipStatus === "REJECTED"),
   );
 };
 
@@ -520,6 +555,19 @@ router.post("/request-otp", async (req, res) => {
       });
     }
 
+    if (member.membershipStatus === "PENDING") {
+      return res.status(403).json({
+        success: false,
+        message: "Your registration is pending admin approval.",
+      });
+    }
+    if (member.membershipStatus === "REJECTED") {
+      return res.status(403).json({
+        success: false,
+        message: "Your membership registration was not approved.",
+      });
+    }
+
     const otp = generateOtp();
     const otpHash = await bcrypt.hash(otp, 10);
     member.otpHash = otpHash;
@@ -560,6 +608,19 @@ router.post("/verify-otp", async (req, res) => {
       return res.status(404).json({
         success: false,
         message: "No registration found for this email address.",
+      });
+    }
+
+    if (member.membershipStatus === "PENDING") {
+      return res.status(403).json({
+        success: false,
+        message: "Your registration is pending admin approval.",
+      });
+    }
+    if (member.membershipStatus === "REJECTED") {
+      return res.status(403).json({
+        success: false,
+        message: "Your membership registration was not approved.",
       });
     }
 
@@ -1025,6 +1086,10 @@ router.post("/admin/delete-consent", verify, async (req, res) => {
 // and expired members are included too so consent can be re-requested.
 router.post("/consent-reminder", verify, async (req, res) => {
   try {
+    const requestedLimit = Number.parseInt(req.body.limit, 10);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 500)
+      : null;
     const requested = Array.isArray(req.body.registrationNos)
       ? req.body.registrationNos.map((v) => String(v).trim()).filter(Boolean)
       : [];
@@ -1048,7 +1113,10 @@ router.post("/consent-reminder", verify, async (req, res) => {
       };
     }
 
-    const pendingMembers = await Registration.find(filter);
+    const allPendingMembers = await Registration.find(filter).sort({ registeredAt: 1 });
+    const pendingMembers = limit
+      ? allPendingMembers.slice(0, limit)
+      : allPendingMembers;
 
     const frontendUrl = (
       process.env.FRONTEND_URL ||
@@ -1126,6 +1194,8 @@ router.post("/consent-reminder", verify, async (req, res) => {
       success: true,
       message: `Consent reminder emails sent to ${sent} member${sent !== 1 ? "s" : ""}${notes.length ? ` (${notes.join(", ")})` : ""}.`,
       pending: pendingMembers.length,
+      requested: pendingMembers.length,
+      eligible: allPendingMembers.length,
       sent,
       skipped: noEmail + sendErrors,
       noEmail,
@@ -1212,6 +1282,7 @@ router.delete("/delete", verify, async (req, res) => {
         memberEmail: member.email,
       });
 
+      deleteDegreeCertificate(member.degreeCertificatePath);
       await member.deleteOne();
     }
 
@@ -1355,7 +1426,7 @@ router.post("/register", registerRateLimiter, async (req, res) => {
     const titlePrefix = title && title !== "Select Title" ? `${title} ` : "";
     const fullName = `${titlePrefix}${firstName} ${lastName}`.trim();
     const sNo = await getNextSNo();
-    const regNo = makeRegNo(sNo);
+    const regNo = `PENDING-${crypto.randomBytes(12).toString("hex")}`;
     const now = new Date();
     const dateStr = now.toISOString().split("T")[0];
     const timeStr = now.toTimeString().split(" ")[0];
@@ -1403,8 +1474,8 @@ router.post("/register", registerRateLimiter, async (req, res) => {
         memberEmail: email,
       });
 
-      sendWelcomeMemberEmail(savedRegistration).catch((err) =>
-        console.error("Registration welcome email error:", err.message),
+      sendPendingMembershipEmail(savedRegistration).catch((err) =>
+        console.error("Registration pending email error:", err.message),
       );
     } catch (dbErr) {
       console.warn("Database save warning:", dbErr.message);
@@ -1415,7 +1486,8 @@ router.post("/register", registerRateLimiter, async (req, res) => {
       message: "Registration successful!",
       data: {
         sNo,
-        registrationNo: regNo,
+        registrationNo: "",
+        membershipStatus: "PENDING",
         fullName,
         email,
         mobileNo,
@@ -1505,7 +1577,7 @@ router.post(
       });
     }
 
-    if (await checkDuplicateEmail(email)) {
+    if (await checkDuplicateEmail(email, { allowRejected: true })) {
       deleteDegreeCertificate(storedDegreeCertificatePath(req.file));
       return res.status(400).json({
         success: false,
@@ -1630,7 +1702,8 @@ router.post("/verify-payment", async (req, res) => {
         message: "Payment already verified.",
         data: {
           sNo: existing.sNo,
-          registrationNo: existing.registrationNo,
+          registrationNo: existing.membershipStatus === "APPROVED" ? existing.registrationNo : "",
+          membershipStatus: existing.membershipStatus || "PENDING",
           fullName: existing.fullName,
           email: existing.email,
           mobileNo: existing.mobileNo,
@@ -1662,11 +1735,63 @@ router.post("/verify-payment", async (req, res) => {
     const timeStr = now.toTimeString().split(" ")[0];
 
     // Allocate sNo and registrationNo dynamically with retry on collision
-    let newRegistration = null;
+    let newRegistration = await Registration.findOne({
+      email: pending.email,
+      membershipStatus: "REJECTED",
+    });
+    if (newRegistration) {
+      deleteDegreeCertificate(newRegistration.degreeCertificatePath);
+      Object.assign(newRegistration, {
+        registrationNo: `PENDING-${crypto.randomBytes(12).toString("hex")}`,
+        mobileNo: pending.mobileNo,
+        email: pending.email,
+        title: pending.title,
+        firstName: pending.firstName,
+        lastName: pending.lastName,
+        fullName: pending.fullName,
+        country: pending.country || "India",
+        speciality: pending.speciality || "",
+        educationalQualification: pending.educationalQualification || "",
+        degreeCertificatePath: pending.degreeCertificatePath || "",
+        degreeCertificateName: pending.degreeCertificateName || "",
+        degreeCertificateMimeType: pending.degreeCertificateMimeType || "",
+        degreeCertificateSize: pending.degreeCertificateSize || 0,
+        hospitalName: pending.hospitalName || "",
+        designation: pending.designation || "",
+        membershipPlan: pending.membershipPlan || "Lifetime",
+        amount: pending.amount || 5000,
+        paymentOrderId: razorpay_order_id,
+        paymentId: razorpay_payment_id,
+        paymentSignature: razorpay_signature,
+        paymentStatus: "paid",
+        paidAt: now,
+        refundStatus: "NOT_REQUESTED",
+        refundId: "",
+        refundAmount: 0,
+        refundInitiatedAt: null,
+        refundError: "",
+        membershipStatus: "PENDING",
+        approvedAt: null,
+        approvedBy: null,
+        rejectionReason: "",
+        rejectedAt: null,
+        rejectedBy: null,
+        registeredAt: now,
+        date: dateStr,
+        time: timeStr,
+      });
+      newRegistration.reviewHistory = newRegistration.reviewHistory || [];
+      newRegistration.reviewHistory.push({
+        action: "REAPPLIED",
+        reason: "New membership application submitted after previous denial.",
+        reviewedAt: now,
+      });
+      newRegistration = await newRegistration.save();
+    }
     let attempts = 0;
     while (!newRegistration && attempts < 5) {
       const sNo = await getNextSNo();
-      const registrationNo = makeRegNo(sNo);
+      const registrationNo = `PENDING-${crypto.randomBytes(12).toString("hex")}`;
 
       try {
         const candidate = new Registration({
@@ -1724,13 +1849,14 @@ router.post("/verify-payment", async (req, res) => {
     await createNotification({
       type: "REGISTRATION",
       message: `New membership registration: ${newRegistration.fullName} (${newRegistration.registrationNo})`,
-      registrationNo: newRegistration.registrationNo,
+      registrationNo: "",
+      membershipStatus: newRegistration.membershipStatus || "PENDING",
       memberName: newRegistration.fullName,
       memberEmail: newRegistration.email,
     });
 
-    sendWelcomeMemberEmail(newRegistration).catch((err) =>
-      console.error("Verify payment welcome email error:", err.message),
+    sendPendingMembershipEmail(newRegistration).catch((err) =>
+      console.error("Verify payment pending email error:", err.message),
     );
 
     // Payment is settled - remove pending record(s)
@@ -1743,7 +1869,8 @@ router.post("/verify-payment", async (req, res) => {
       message: "Registration successful!",
       data: {
         sNo: newRegistration.sNo,
-        registrationNo: newRegistration.registrationNo,
+        registrationNo: newRegistration.membershipStatus === "APPROVED" ? newRegistration.registrationNo : "",
+        membershipStatus: newRegistration.membershipStatus || "PENDING",
         fullName: newRegistration.fullName,
         email: newRegistration.email,
         mobileNo: newRegistration.mobileNo,
@@ -1797,10 +1924,38 @@ router.get("/list", async (req, res) => {
 
       return {
         sNo: Number(doc.sNo) || 0,
-        registrationNo: doc.registrationNo,
+        registrationNo: doc.membershipStatus === "APPROVED" || !doc.membershipStatus ? doc.registrationNo : "",
+        approvalKey: doc.registrationNo,
+        certificateKey: doc.registrationNo,
         fullName: doc.fullName,
+        title: doc.title || "",
+        firstName: doc.firstName || "",
+        lastName: doc.lastName || "",
+        country: doc.country || "",
         email: doc.email || "",
         mobileNo: doc.mobileNo || "",
+        speciality: doc.speciality || "",
+        hospitalName: doc.hospitalName || "",
+        designation: doc.designation || "",
+        membershipPlan: doc.membershipPlan || "Lifetime",
+        amount: doc.amount || 0,
+        paymentStatus: doc.paymentStatus || "pending",
+        refundStatus: doc.refundStatus || "NOT_REQUESTED",
+        refundId: doc.refundId || "",
+        refundAmount: doc.refundAmount || 0,
+        refundInitiatedAt: doc.refundInitiatedAt ?? null,
+        refundError: doc.refundError || "",
+        refundEligible: Boolean(doc.paymentId && doc.paymentStatus === "paid"),
+        paidAt: doc.paidAt ?? null,
+        registeredAt: doc.registeredAt ?? null,
+        educationalQualification: doc.educationalQualification || "",
+        degreeCertificateName: doc.degreeCertificateName || "",
+        degreeCertificateAvailable: Boolean(doc.degreeCertificatePath),
+        membershipStatus: doc.membershipStatus || "APPROVED",
+        rejectionReason: doc.rejectionReason || "",
+        rejectedAt: doc.rejectedAt ?? null,
+        approvedAt: doc.approvedAt ?? null,
+        reviewHistory: doc.reviewHistory || [],
         expiryDate: doc.expiryDate || "LifeTime",
         date: memberDate(doc),
         time: memberTime(doc),
@@ -1823,6 +1978,125 @@ router.get("/list", async (req, res) => {
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET: Download a member's private degree certificate for admin review.
+router.get("/degree-certificate/:registrationNo", verify, async (req, res) => {
+  try {
+    const member = await Registration.findOne({
+      registrationNo: req.params.registrationNo,
+    }).lean();
+    if (!member?.degreeCertificatePath) {
+      return res.status(404).json({ success: false, error: "Certificate not found." });
+    }
+
+    const certificatePath = path.join(__dirname, "..", member.degreeCertificatePath);
+    if (!fs.existsSync(certificatePath)) {
+      return res.status(404).json({ success: false, error: "Certificate file is unavailable." });
+    }
+    return res.download(certificatePath, member.degreeCertificateName || path.basename(certificatePath));
+  } catch (error) {
+    return res.status(500).json({ success: false, error: "Unable to download certificate." });
+  }
+});
+
+// POST: Approve an online registration after reviewing its submitted details.
+router.post("/approve/:registrationNo", verify, async (req, res) => {
+  try {
+    const member = await Registration.findOne({ registrationNo: req.params.registrationNo });
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+
+    const approvedSNo = await getNextSNo();
+    member.sNo = approvedSNo;
+    member.registrationNo = makeRegNo(approvedSNo);
+    member.membershipStatus = "APPROVED";
+    member.approvedAt = new Date();
+    member.approvedBy = req.user?._id || null;
+    member.rejectionReason = "";
+    member.rejectedAt = null;
+    member.rejectedBy = null;
+    member.reviewHistory = member.reviewHistory || [];
+    member.reviewHistory.push({
+      action: "APPROVED",
+      reviewedAt: member.approvedAt,
+      reviewedBy: req.user?._id || null,
+    });
+    await member.save();
+    return res.json({
+      success: true,
+      message: "Membership approved successfully.",
+      registrationNo: member.registrationNo,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: "Unable to approve membership." });
+  }
+});
+
+// POST: Deny an online registration with an auditable reason.
+router.post("/reject/:registrationNo", verify, async (req, res) => {
+  try {
+    const reason = String(req.body.reason || "").trim();
+    const shouldRefund = req.body.refund !== false;
+    if (!reason) {
+      return res.status(400).json({ success: false, error: "A denial reason is required." });
+    }
+
+    const member = await Registration.findOne({ registrationNo: req.params.registrationNo });
+    if (!member) return res.status(404).json({ success: false, error: "Member not found." });
+
+    let refund = null;
+    if (shouldRefund && member.paymentStatus === "paid" && member.paymentId) {
+      if (member.refundStatus === "PROCESSED" || member.paymentStatus === "refunded") {
+        refund = { id: member.refundId, amount: member.refundAmount };
+      } else {
+        member.refundStatus = "PENDING";
+        member.refundError = "";
+        await member.save();
+        try {
+          refund = await refundPayment(member.paymentId);
+          member.refundStatus = "PROCESSED";
+          member.refundId = refund.id || "";
+          member.refundAmount = Number(refund.amount || member.amount * 100) / 100;
+          member.refundInitiatedAt = new Date();
+          member.paymentStatus = "refunded";
+        } catch (refundError) {
+          member.refundStatus = "FAILED";
+          member.refundError = refundError.message || "Razorpay refund failed.";
+          // Refund failure is recorded separately; denial must still proceed.
+          refund = null;
+        }
+      }
+    }
+
+    member.membershipStatus = "REJECTED";
+    member.rejectionReason = reason;
+    member.rejectedAt = new Date();
+    member.rejectedBy = req.user?._id || null;
+    member.approvedAt = null;
+    member.approvedBy = null;
+    member.reviewHistory = member.reviewHistory || [];
+    member.reviewHistory.push({
+      action: "REJECTED",
+      reason,
+      reviewedAt: member.rejectedAt,
+      reviewedBy: req.user?._id || null,
+    });
+    await member.save();
+    const refundFailed = member.refundStatus === "FAILED";
+    return res.json({
+      success: true,
+      message: refundFailed
+        ? "Membership denied. Razorpay refund could not be completed and requires follow-up."
+        : refund
+          ? "Membership denied and refund initiated successfully."
+          : "Membership denied successfully.",
+      refund,
+      refundFailed,
+      refundError: member.refundError || "",
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: "Unable to deny membership." });
   }
 });
 
@@ -1922,6 +2196,7 @@ router.post("/add", verify, async (req, res) => {
       time: timeStr,
       registeredAt: now,
       consent: false,
+      membershipStatus: "APPROVED",
     });
     await newRegistration.save();
 
@@ -2242,6 +2517,7 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
           time: r.time,
           registeredAt: r.registeredAt || new Date(),
           consent: false,
+          membershipStatus: "APPROVED",
         });
         await newRegistration.save();
         dbCreated += 1;
@@ -2277,3 +2553,4 @@ module.exports.checkDuplicateEmail = checkDuplicateEmail;
 module.exports.getNextSNo = getNextSNo;
 module.exports.makeRegNo = makeRegNo;
 module.exports.sendWelcomeMemberEmail = sendWelcomeMemberEmail;
+module.exports.sendPendingMembershipEmail = sendPendingMembershipEmail;
