@@ -137,11 +137,12 @@ app.use((req, res, next) => {
       "script-src 'self' 'unsafe-inline' 'unsafe-eval' * https://checkout.razorpay.com https://api.razorpay.com https://cdn.razorpay.com; " +
       "connect-src 'self' * https://api.razorpay.com https://checkout.razorpay.com https://cdn.razorpay.com https://lumberjack.razorpay.com https://lumberjack-cx.razorpay.com https://*.razorpay.com https://www.youtube.com; " +
       "img-src * 'self' data: blob: https: http:; " +
-      "frame-src * 'self' https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com; " +
+      "frame-src 'self' blob: https://api.razorpay.com https://checkout.razorpay.com https://*.razorpay.com https://www.youtube.com https://www.youtube-nocookie.com; " +
       "style-src * 'self' 'unsafe-inline' https:; " +
       "font-src * 'self' data: https:;",
   );
   res.removeHeader("Cross-Origin-Embedder-Policy");
+  res.removeHeader("X-Frame-Options");
   next();
 });
 
