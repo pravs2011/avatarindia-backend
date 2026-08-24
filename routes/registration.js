@@ -39,6 +39,7 @@ const registerRateLimiter = RateLimit({ max: 5, windowMS: 10 * 60 * 1000 });
 const captchaRateLimiter = RateLimit({ max: 30, windowMS: 10 * 60 * 1000 });
 
 const JWT_SECRET = process.env.JWT_TOKEN_SECRET || "avatarindia-local-secret";
+const MEMBER_LOGIN_URL = "https://avatarindia.org/membership/profile";
 const EDUCATIONAL_QUALIFICATIONS = [
   "Bachelor's Degree",
   "Master's Degree",
@@ -268,6 +269,11 @@ const sendConsentReminderEmail = async (member, loginUrl, grievanceContact) => {
     loginUrl,
     grievanceContactLine,
   });
+  // Keep legacy customized templates from sending the old HTTP:4089 URL.
+  tpl.html = tpl.html.replace(
+    "http://avatarindia.org:4089/membership/profile",
+    MEMBER_LOGIN_URL,
+  );
 
   try {
     await transporter.sendMail({
@@ -1118,12 +1124,7 @@ router.post("/consent-reminder", verify, async (req, res) => {
       ? allPendingMembers.slice(0, limit)
       : allPendingMembers;
 
-    const frontendUrl = (
-      process.env.FRONTEND_URL ||
-      `http://${req.get("host") || "localhost:3006"}` ||
-      "http://localhost:3006"
-    ).replace(/\/+$/, "");
-    const loginUrl = `${frontendUrl}/membership/profile`;
+    const loginUrl = MEMBER_LOGIN_URL;
 
     // Pull the Grievance Officer contact from the backend-managed consent content
     let grievanceContact = "";

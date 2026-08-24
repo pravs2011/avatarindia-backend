@@ -22,6 +22,7 @@ const statsRoute = require("./routes/stats");
 const emailTemplateRoute = require("./routes/emailTemplates");
 const documentRoute = require("./routes/documents");
 const popupRoute = require("./routes/popup");
+const memberBackupRoute = require("./routes/memberBackup");
 
 module.exports = (app) => {
   //Route Middlewares
@@ -45,4 +46,5 @@ module.exports = (app) => {
   app.use("/api/email-templates", emailTemplateRoute);
   app.use("/api/documents", documentRoute);
   app.use("/api/popup", popupRoute);
+  app.use("/api/member-backup", memberBackupRoute);
 };

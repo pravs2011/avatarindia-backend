@@ -84,6 +84,107 @@ const serialize = (doc) => ({
   updatedAt: doc.updatedAt,
 });
 
+const CONSTITUTION_TITLE = "Constitution";
+
+// Public inline viewer for the current Constitution PDF.
+router.get("/constitution/view", async (req, res) => {
+  try {
+    const doc = await Document.findOne({
+      title: CONSTITUTION_TITLE,
+      visibility: "PUBLIC",
+    })
+      .sort({ createdAt: -1 })
+      .lean();
+
+    if (!doc) {
+      return res.status(404).json({
+        success: false,
+        message: "The Constitution document is not available yet.",
+      });
+    }
+
+    const full = path.join(__dirname, "../public", doc.filePath);
+    if (!fs.existsSync(full)) {
+      return res.status(404).json({
+        success: false,
+        message: "The Constitution file is missing on the server.",
+      });
+    }
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "inline");
+    return fs.createReadStream(full).pipe(res);
+  } catch (error) {
+    console.error("Constitution viewer error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Unable to load the Constitution document.",
+    });
+  }
+});
+
+// Admin status for the Constitution document.
+router.get("/constitution", verify, async (req, res) => {
+  const doc = await Document.findOne({ title: CONSTITUTION_TITLE })
+    .sort({ createdAt: -1 })
+    .lean();
+  return res.json({ success: true, document: doc ? serialize(doc) : null });
+});
+
+// Admin upload/replacement for the single public Constitution PDF.
+router.post(
+  "/constitution/upload",
+  verify,
+  upload.single("file"),
+  async (req, res) => {
+    try {
+      const isPdf =
+        req.file &&
+        (req.file.mimetype === "application/pdf" || /\.pdf$/i.test(req.file.originalname || ""));
+      if (!isPdf) {
+        if (req.file) deleteFile(`documents/${req.file.filename}`);
+        return res.status(400).json({
+          success: false,
+          message: "Please upload a PDF document.",
+        });
+      }
+
+      const previous = await Document.find({ title: CONSTITUTION_TITLE });
+      const saved = await new Document({
+        title: CONSTITUTION_TITLE,
+        description: "Public Constitution document",
+        visibility: "PUBLIC",
+        filePath: `documents/${req.file.filename}`,
+        fileName: req.file.originalname,
+        fileSize: req.file.size,
+        mimeType: "application/pdf",
+        uploadedBy: req.user._id,
+      }).save();
+
+      await Document.deleteMany({
+        title: CONSTITUTION_TITLE,
+        _id: { $ne: saved._id },
+      });
+      previous
+        .filter((doc) => String(doc._id) !== String(saved._id))
+        .forEach((doc) => deleteFile(doc.filePath));
+
+      return res.status(201).json({
+        success: true,
+        message: "Constitution PDF uploaded successfully.",
+        document: serialize(saved.toObject()),
+      });
+    } catch (error) {
+      if (req.file) deleteFile(`documents/${req.file.filename}`);
+      console.error("Constitution upload error:", error);
+      return res.status(500).json({
+        success: false,
+        message: "Unable to upload the Constitution PDF.",
+      });
+    }
+  },
+);
+
 // GET /api/documents - admin: list every uploaded document
 router.get("/", verify, async (req, res) => {
   try {

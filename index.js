@@ -13,6 +13,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 const setupRoute = require("./apiRoutes");
 const paymentWebhookRouter = require("./routes/paymentWebhook");
+const { startMemberBackupScheduler } = require("./services/memberBackup");
 
 const loginlimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 10 minutes
@@ -156,6 +157,7 @@ app.use((req, res, next) => {
 
 //Route Middlewares
 setupRoute(app);
+startMemberBackupScheduler();
 
 // Error handling middleware
 app.use((err, req, res, next) => {

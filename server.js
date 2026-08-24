@@ -13,6 +13,7 @@ const morgan = require("morgan");
 
 const setupRoute = require("./apiRoutes");
 const paymentWebhookRouter = require("./routes/paymentWebhook");
+const { startMemberBackupScheduler } = require("./services/memberBackup");
 
 const app = express();
 
@@ -112,6 +113,7 @@ app.use((req, res, next) => {
 
 // Route Middlewares
 setupRoute(app);
+startMemberBackupScheduler();
 
 // Error handling middleware
 app.use((err, req, res, next) => {
