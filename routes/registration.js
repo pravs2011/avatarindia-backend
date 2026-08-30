@@ -431,6 +431,24 @@ const getNextSNo = async () => {
 
 const makeRegNo = (sNo) => `AIS${String(sNo).padStart(4, "0")}`;
 
+// Legacy Excel members have a real registration number, but records imported
+// before membershipStatus was added may still have the schema default
+// (PENDING). Online applications always use a PENDING-* temporary number, so
+// this is safe to use for backwards-compatible promotion of old paid members.
+const isLegacyImportedMember = (member) =>
+  member?.membershipStatus === "PENDING" &&
+  Boolean(member.registrationNo) &&
+  !/^PENDING-/i.test(String(member.registrationNo)) &&
+  !member.paymentOrderId;
+
+const promoteLegacyImportedMember = async (member) => {
+  if (!isLegacyImportedMember(member)) return member;
+  member.membershipStatus = "APPROVED";
+  member.paymentStatus = "paid";
+  member.approvedAt = member.registeredAt || member.createdAt || new Date();
+  return member.save();
+};
+
 // Case-insensitive duplicate check for a registered email across the DB.
 const checkDuplicateEmail = async (email, options = {}) => {
   const normalized = String(email || "")
@@ -561,6 +579,8 @@ router.post("/request-otp", async (req, res) => {
       });
     }
 
+    await promoteLegacyImportedMember(member);
+
     if (member.membershipStatus === "PENDING") {
       return res.status(403).json({
         success: false,
@@ -616,6 +636,8 @@ router.post("/verify-otp", async (req, res) => {
         message: "No registration found for this email address.",
       });
     }
+
+    await promoteLegacyImportedMember(member);
 
     if (member.membershipStatus === "PENDING") {
       return res.status(403).json({
@@ -1892,6 +1914,22 @@ router.post("/verify-payment", async (req, res) => {
 // truth since the legacy Excel master list was removed).
 router.get("/list", async (req, res) => {
   try {
+    // Repair records imported by older versions so old paid members remain
+    // usable and keep their original registration numbers.
+    await Registration.updateMany(
+      {
+        membershipStatus: "PENDING",
+        registrationNo: { $not: /^PENDING-/i },
+        paymentOrderId: { $in: [null, ""] },
+      },
+      {
+        $set: {
+          membershipStatus: "APPROVED",
+          paymentStatus: "paid",
+        },
+      },
+    );
+
     const durationDays = await getConsentDurationDays();
     const docs = await Registration.find({}).sort({ sNo: -1 }).lean();
     const now = Date.now();
@@ -2283,6 +2321,78 @@ router.post("/update/:registrationNo", verify, async (req, res) => {
   }
 });
 
+// POST: Restore a member's original registration number. This deliberately
+// updates only registrationNo and refuses collisions, so production records
+// cannot be overwritten accidentally.
+router.post("/restore-registration-no/:registrationNo", verify, async (req, res) => {
+  try {
+    const currentRegistrationNo = String(req.params.registrationNo || "").trim();
+    const originalRegistrationNo = String(req.body.originalRegistrationNo || "").trim();
+
+    if (!currentRegistrationNo || !originalRegistrationNo) {
+      return res.status(400).json({
+        success: false,
+        error: "Both current and original registration numbers are required.",
+      });
+    }
+    if (originalRegistrationNo.length > 100 || /^PENDING-/i.test(originalRegistrationNo)) {
+      return res.status(400).json({
+        success: false,
+        error: "Please enter a valid permanent registration number.",
+      });
+    }
+
+    const member = await Registration.findOne({ registrationNo: currentRegistrationNo });
+    if (!member) {
+      return res.status(404).json({ success: false, error: "Member not found." });
+    }
+    if (member.registrationNo === originalRegistrationNo) {
+      return res.status(400).json({ success: false, error: "That is already the current registration number." });
+    }
+
+    const conflict = await Registration.findOne({
+      registrationNo: originalRegistrationNo,
+      _id: { $ne: member._id },
+    }).select("_id fullName").lean();
+    if (conflict) {
+      return res.status(409).json({
+        success: false,
+        error: `Registration number is already assigned to ${conflict.fullName || "another member"}.`,
+      });
+    }
+
+    const previousRegistrationNo = member.registrationNo;
+    member.registrationNo = originalRegistrationNo;
+    await member.save();
+
+    await createLog({
+      data: JSON.stringify({
+        memberId: member._id,
+        fullName: member.fullName,
+        previousRegistrationNo,
+        restoredRegistrationNo: originalRegistrationNo,
+      }),
+      user: req.user?._id,
+      activity: "Restore Registration Number",
+      page: "RegisteredMembers",
+      ip_information: req.ip,
+      route: "/restore-registration-no",
+    });
+
+    return res.json({
+      success: true,
+      message: "Original registration number restored successfully.",
+      registrationNo: member.registrationNo,
+    });
+  } catch (error) {
+    if (error?.code === 11000) {
+      return res.status(409).json({ success: false, error: "Registration number is already assigned to another member." });
+    }
+    console.error("Registration number restore error:", error);
+    return res.status(500).json({ success: false, error: "Unable to restore registration number." });
+  }
+});
+
 router.get("/consent-status", async (req, res) => {
   try {
     const email = String(req.query.email || "")
@@ -2519,6 +2629,8 @@ router.post("/import", verify, upload.single("file"), async (req, res) => {
           registeredAt: r.registeredAt || new Date(),
           consent: false,
           membershipStatus: "APPROVED",
+          paymentStatus: "paid",
+          approvedAt: r.registeredAt || new Date(),
         });
         await newRegistration.save();
         dbCreated += 1;
